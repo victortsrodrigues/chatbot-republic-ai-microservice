@@ -13,7 +13,7 @@ class RAGResponse(BaseModel):
     sources: List[Dict]  # Metadata from Pinecone
     requires_action: bool
     action_type: Optional[str] = None  # 'fetch_media' or 'room_query'
-    action_parameters: Optional[Dict] = None  # {type: 'availability'/'pricing', room_id: '123'}
+    # action_parameters: Optional[Dict] = None  # {type: 'availability'/'pricing', room_id: '123'}
     s3_object_key: Optional[str] = None
     media_type: Optional[str] = None
     caption: Optional[str] = None

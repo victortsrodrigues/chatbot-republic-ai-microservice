@@ -1,16 +1,27 @@
 from app.services.openai_service import OpenAIHandler
 from app.services.pinecone_service import PineconeManager
-from app.services.external_apis import ExternalAPIClient
+from app.services.mongo_service import MongoDBClient
 from app.config import settings
-from typing import Optional
+from typing import Optional, List, Dict
+import re
+import json
 
 
 class RAGOrchestrator:
     def __init__(self):
         self.openai = OpenAIHandler()
         self.pinecone = PineconeManager()
-        self.system_message = settings.default_system_message  # From config
-        self.api_client = ExternalAPIClient()
+        self.mongo = MongoDBClient()
+        self.system_message = settings.default_system_message
+        self.filter_template = """Extract filters as JSON from this query:
+        {query}
+        Use this schema:
+        {{
+            "price": {{"min": number, "max": number}},
+            "features": list[str],
+            "room_type": str,
+            "size": {{"min": number, "max": number}}
+        }}"""
 
     async def process_query(
         self,
@@ -19,119 +30,137 @@ class RAGOrchestrator:
         system_message: str = None,
         filter: Optional[dict] = None,
     ) -> dict:
-        # Generate embedding
+        # Generate embedding and get context
         embedding = await self.openai.generate_embedding(query)
-
-        # Query Pinecone
         context_results = await self.pinecone.query_index(
-            embedding=embedding, filter=filter, top_k=3
+            embedding=embedding, filter=filter, top_k=5
         )
 
-        # Check for required API actions
-        action_data = self._detect_actions(context_results)
-        if action_data:
-            api_result = await self.api_client.get_room_data(
-                action_data['room_id'], 
-                action_data['type']
-            )
-            return self._format_api_response(api_result, action_data, context_results)
+        # Extract all relevant information
+        parsed_filters = await self._parse_filters(query)
+        media_data = self._get_media_data(context_results)
+        rooms_data = await self._fetch_rooms_data(context_results, parsed_filters)
+
+        # Generate response
+        response = await self._generate_response(
+            query, context_results, rooms_data, history, 
+            system_message or self.system_message
+        )
+
+        return self._merge_media_data(response, media_data)
+
+    async def _parse_filters(self, query: str) -> dict:
+        """Use OpenAI to extract structured filters from natural language"""
+        prompt = self.filter_template.format(query=query)
+        response = await self.openai.generate_chat_completion([{
+            "role": "system",
+            "content": "You are a skilled query parser. Return only valid JSON."
+        }, {
+            "role": "user",
+            "content": prompt
+        }])
         
-        # Build messages for chat completion
-        messages = self._build_messages(
-            query=query,
-            context=context_results,
-            history=history,
-            system_message=system_message,
+        try:
+            return json.loads(response.strip("` \n"))
+        except json.JSONDecodeError:
+            return self._fallback_filter_parsing(query)
+
+    def _fallback_filter_parsing(self, query: str) -> dict:
+        """Regex-based fallback for filter parsing"""
+        filters = {}
+        
+        # Price parsing
+        price_matches = re.findall(r'\$?(\d+)', query)
+        if len(price_matches) >= 2:
+            filters["price"] = {"min": int(price_matches[0]), "max": int(price_matches[1])}
+        elif "cheaper than" in query:
+            max_price = re.search(r'cheaper than \$?(\d+)', query)
+            if max_price:
+                filters["price"] = {"max": int(max_price.group(1))}
+        
+        # Feature extraction
+        features = []
+        for term in ["suite", "balcony", "ocean view"]:  # Extend this list
+            if term in query.lower():
+                features.append(term)
+        if features:
+            filters["features"] = features
+            
+        return filters
+
+    async def _fetch_rooms_data(self, context: list, filters: dict) -> list:
+        """Combine Pinecone context with MongoDB filters"""
+        room_ids = list({
+            c['metadata']['room_id'] 
+            for c in context 
+            if c['metadata'].get('type') == 'room'
+        })
+        
+        if room_ids:
+            return self.mongo.get_rooms_by_ids(room_ids, filters)
+        return self.mongo.get_all_rooms(filters)
+    
+    def _get_media_data(self, context: list) -> Optional[dict]:
+        return next(
+            (
+                {
+                    "s3_object_key": c["metadata"]["s3_object_key"],
+                    "media_type": c["metadata"]["media_type"],
+                    "caption": c["metadata"].get("caption", ""),
+                }
+                for c in context
+                if c["metadata"].get("type") == "media"
+            ),
+            None,
         )
 
-        chat_response = await self.openai.generate_chat_completion(messages)
-
-        return self._format_response(chat_response, context_results)
-
-    def _build_messages(self, query: str, context: list, history: list, system_message: str):
-        # 1. System message (custom or default)
-        messages = [
-            {"role": "system", "content": system_message or self.system_message}
-        ]
-
-        # 2. Add conversation history
-        messages.extend(history)  # Expects format [{role: "user|assistant", content: "..."}]
-
-        # 3. Add context and current query
+    async def _generate_response(
+        self,
+        query: str,
+        context: list,
+        rooms_data: list,
+        history: list,
+        system_message: str,
+    ) -> dict:
         context_str = "\n".join([c["metadata"]["text"] for c in context])
-        messages.extend(
+        rooms_str = "\n".join(
             [
-                {
-                    "role": "user",
-                    "content": f"Context:\n{context_str}\n\nQuestion: {query}",
-                }
+                f"{r['room_id']}: {r['description']} (${r['price']}/night)"
+                for r in rooms_data
             ]
         )
 
-        return messages
-
-    def _detect_actions(self, context_results: list) -> Optional[dict]:
-        """Detect if any context requires live API call"""
-        for c in context_results:
-            metadata = c['metadata']
-            if metadata.get('requires_live_query'):
-                return {
-                    "type": metadata.get('query_type', 'availability'),
-                    "room_id": metadata['room_id']
-                }
-        return None
-
-    def _format_api_response(self, api_data: dict, action_data: dict, context: list) -> dict:
-        """Format response with live API data"""
-        if not api_data:
-            return {
-                "response": "Unable to retrieve current information. Please try again later.",
-                "sources": [c['metadata'] for c in context],
-                "requires_action": False,
-                "action_type": None,
-                "action_parameters": None,
-                "s3_object_key": None,
-                "media_type": None,
-                "caption": None
-            }
-
-        if action_data['type'] == 'availability':
-            availability_status = 'available' if api_data['available'] else 'unavailable'
-            response_text = f"Room {action_data['room_id']} is {availability_status}"
-        else:
-            response_text = f"Current price for room {action_data['room_id']}: ${api_data['price']}"
-        
-        return {
-            "response": response_text,
-            "sources": [c['metadata'] for c in context],
-            "requires_action": False,
-            "action_type": None,
-            "action_parameters": None,
-            "s3_object_key": None,
-            "media_type": None,
-            "caption": None
-        }
-    
-    def _format_response(self, response: str, context: list) -> dict:
-        # Add logic to detect required actions from metadata
-        media_data = next((
+        messages = [
+            {"role": "system", "content": system_message or self.system_message},
+            *history,
             {
-                "s3_object_key": c['metadata']['s3_object_key'],
-                "media_type": c['metadata']['media_type'],
-                "caption": c['metadata'].get('caption', '')
-            } 
-            for c in context if c['metadata'].get('type') == 'media'
-        ), None)
+                "role": "user",
+                "content": f"""Context:
+                            {context_str}
 
-        # Add action detection logic here
-        
+                            Available Rooms:
+                            {rooms_str}
+
+                            Question: {query}""",
+            },
+        ]
+
+        chat_response = await self.openai.generate_chat_completion(messages)
         return {
-            "response": response,
-            "sources": [c['metadata'] for c in context],
-            "requires_action": bool(media_data),
-            "action_type": "fetch_media" if media_data else None,
-            "s3_object_key": media_data["s3_object_key"] if media_data else None,
-            "media_type": media_data["media_type"] if media_data else None,
-            "caption": media_data["caption"] if media_data else None
+            "response": chat_response,
+            "sources": [c["metadata"] for c in context],
+            "requires_action": False,
         }
-        
+
+    def _merge_media_data(self, response: dict, media_data: Optional[dict]) -> dict:
+        if media_data:
+            response.update(
+                {
+                    "requires_action": True,
+                    "action_type": "fetch_media",
+                    "s3_object_key": media_data["s3_object_key"],
+                    "media_type": media_data["media_type"],
+                    "caption": media_data["caption"],
+                }
+            )
+        return response

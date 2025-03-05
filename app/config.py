@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # S3 Configuration
     s3_bucket_name: str
     
+    # MongoDB Configuration
+    mongo_uri: str = "mongodb://localhost:27017"
+    mongo_db: str = "student_republic"
+    
     # Application Settings
     max_history_length: int = 5
     default_system_message: str = "You are a helpful assistant for Student Republic. Be polite and professional."
