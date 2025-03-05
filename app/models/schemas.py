@@ -1,17 +1,19 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 class RAGQuery(BaseModel):
     query: str
     user_id: str
-    history: list[dict] = []  # New: Conversation history
-    system_message: Optional[str] = None  # New: Custom system message
-    filter: Optional[dict] = None
+    history: list[Dict] = []  # Conversation history
+    system_message: Optional[str] = None  # Custom system message
+    filter: Optional[Dict] = None  # Pinecone metadata filter
 
 class RAGResponse(BaseModel):
     response: str
-    sources: List[dict]  # Metadata from Pinecone
+    sources: List[Dict]  # Metadata from Pinecone
     requires_action: bool
-    action_type: Optional[str] = None  # e.g., "fetch_media", "live_query"
-    action_parameters: Optional[dict] = None
-    media_pointer: Optional[str] = None
+    action_type: Optional[str] = None  # 'fetch_media' or 'room_query'
+    action_parameters: Optional[Dict] = None  # {type: 'availability'/'pricing', room_id: '123'}
+    s3_object_key: Optional[str] = None
+    media_type: Optional[str] = None
+    caption: Optional[str] = None
