@@ -38,7 +38,7 @@ class RAGOrchestrator:
 
         # Extract all relevant information
         parsed_filters = await self._parse_filters(query)
-        media_data = self._get_media_data(context_results)
+        media_data = self._get_media_data(context_results, query)
         rooms_data = await self._fetch_rooms_data(context_results, parsed_filters)
 
         # Generate response
@@ -100,19 +100,59 @@ class RAGOrchestrator:
             return self.mongo.get_rooms_by_ids(room_ids, filters)
         return self.mongo.get_all_rooms(filters)
     
-    def _get_media_data(self, context: list) -> Optional[dict]:
-        return next(
-            (
-                {
-                    "s3_object_key": c["metadata"]["s3_object_key"],
-                    "media_type": c["metadata"]["media_type"],
-                    "caption": c["metadata"].get("caption", ""),
-                }
-                for c in context
-                if c["metadata"].get("type") == "media"
-            ),
-            None,
-        )
+    async def _get_media_data(self, context: list, query: str) -> List[dict]:
+        """Retrieve all relevant media files based on explicit or proactive triggers"""
+        media_list = []
+        
+        # 1. Check for explicit media requests
+        explicit_media = [
+        {
+            "s3_object_key": c['metadata']['s3_object_key'],
+            "media_type": c['metadata']['media_type'],
+            "caption": c['metadata'].get('caption', '')
+        }
+        for c in context if c['metadata'].get('type') == 'media'
+        ]
+        media_list.extend(explicit_media)
+
+        # 2. Check for proactive media suggestions
+        for c in context:
+            if c['metadata'].get('suggest_media', False):
+                if await self._should_attach_media(query, c['metadata']):
+                    media_list.append({
+                        "s3_object_key": c['metadata']['s3_object_key'],
+                        "media_type": c['metadata']['media_type'],
+                        "caption": c['metadata'].get('caption', '')
+                    })
+
+        # 3. Deduplicate media entries
+        unique_media = []
+        seen_keys = set()
+        for media in media_list:
+            if media["s3_object_key"] not in seen_keys:
+                unique_media.append(media)
+                seen_keys.add(media["s3_object_key"])
+
+        return unique_media
+
+    async def _should_attach_media(self, query: str, metadata: dict) -> bool:
+        """Determine if media should be attached proactively"""
+        # Check metadata triggers
+        if any(trigger in query.lower() for trigger in metadata.get('media_triggers', [])):
+            return True
+
+        # Use OpenAI for intent analysis
+        prompt = f"""Should the response include media for this query?
+        Query: {query}
+        Context: {metadata.get('text', '')}
+        Answer ONLY 'YES' or 'NO'"""
+        
+        response = await self.openai.generate_chat_completion([{
+            "role": "user", 
+            "content": prompt
+        }])
+        
+        return "YES" in response.strip().upper()
 
     async def _generate_response(
         self,
@@ -152,15 +192,11 @@ class RAGOrchestrator:
             "requires_action": False,
         }
 
-    def _merge_media_data(self, response: dict, media_data: Optional[dict]) -> dict:
+    def _merge_media_data(self, response: dict, media_data: List[dict]) -> dict:
         if media_data:
-            response.update(
-                {
-                    "requires_action": True,
-                    "action_type": "fetch_media",
-                    "s3_object_key": media_data["s3_object_key"],
-                    "media_type": media_data["media_type"],
-                    "caption": media_data["caption"],
-                }
-            )
+            response.update({
+                "requires_action": True,
+                "action_type": "fetch_media",
+                "media_list": media_data  # Replace single media fields with a list
+            })
         return response
