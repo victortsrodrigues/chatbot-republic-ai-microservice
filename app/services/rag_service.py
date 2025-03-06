@@ -14,15 +14,98 @@ class RAGOrchestrator:
         self.pinecone = PineconeManager()
         self.mongo = MongoDBClient()
         self.system_message = settings.default_system_message
-        self.filter_template = """Extract filters as JSON from this query:
-        {query}
-        Use this schema:
-        {{
-            "price": {{"min": number, "max": number}},
-            "features": list[str],
-            "room_type": str,
-            "size": {{"min": number, "max": number}}
-        }}"""
+        self.filter_template = """Convert this query to MongoDB JSON syntax:
+                                {query}
+                                Use this schema (all fields optional):
+                                {{
+                                    "price"?: {{
+                                        "$lt"?: number,
+                                        "$gt"?: number,
+                                        "$lte"?: number,
+                                        "$gte"?: number,
+                                        "$eq"?: number
+                                    }},
+                                    "features"?: {{
+                                        "$all"?: string[],
+                                        "$in"?: string[],
+                                        "$nin"?: string[]
+                                    }},
+                                    "room_type"?: string,
+                                    "availability"?: boolean,
+                                    "$or"?: [{{...}}],
+                                    "$and"?: [{{...}}],
+                                    "$nor"?: [{{...}}],
+                                    "$text"?: {{
+                                        "$search": string,
+                                        "$language"?: string,
+                                        "$caseSensitive"?: boolean
+                                    }},
+                                    "$geoWithin"?: {{
+                                        "$geometry": {{
+                                            "type": "Polygon",
+                                            "coordinates": number[][][]
+                                        }}
+                                    }}
+                                }}"""
+
+    
+    async def process_query(
+        self,
+        query: str,
+        history: list,
+        system_message: str = None,
+        filter: Optional[dict] = None,
+    ) -> dict:
+        
+        # Check query's moderation
+        if await self.openai.check_moderation(query):
+            return {"error": "Query not allowed"}
+        
+        # Correct typos using OpenAI
+        query = await self._correct_typos(query)
+
+        # Normalize query
+        query = self._normalize_query(query)
+
+        # Generate embedding and get context
+        embedding = await self.openai.generate_embedding(query)
+        context_results = await self.pinecone.query_index(
+            embedding=embedding, filter=filter, top_k=3
+        )
+
+        # NEW: Determine if room data is needed
+        requires_room_data = await self._needs_room_data(query, context_results)
+
+        # Extract all relevant information
+        # Rooms
+        parsed_filters = await self._parse_filters(query) if requires_room_data else {}
+        rooms_data = (
+            await self._fetch_rooms_data(context_results, parsed_filters)
+            if requires_room_data
+            else []
+        )
+        # Media
+        media_data = (
+            self._get_media_data(context_results, query)
+            if await self._needs_media(query)
+            else []
+        )
+
+        # Generate response
+        response = await self._generate_response(
+            query,
+            context_results,
+            rooms_data,
+            history,
+            system_message or self.system_message,
+            needs_room_info=requires_room_data,
+        )
+
+        # Check response's moderation
+        if await self.openai.check_moderation(response):
+            return {"error": "Response not allowed"}
+        
+        return self._merge_media_data(response, media_data)
 
     async def _correct_typos(self, query: str) -> str:
         """Correct typos using OpenAI"""
@@ -45,41 +128,42 @@ class RAGOrchestrator:
             logger.error(f"Typo correction failed: {str(e)}")
             return query  # Fallback to original
 
-    async def process_query(
-        self,
-        query: str,
-        history: list,
-        system_message: str = None,
-        filter: Optional[dict] = None,
-    ) -> dict:
-        # Correct typos using OpenAI
-        query = await self._correct_typos(query)
-        
-        # Generate embedding and get context
-        embedding = await self.openai.generate_embedding(query)
-        context_results = await self.pinecone.query_index(
-            embedding=embedding, filter=filter, top_k=5
+    # Add synonym mapping
+    SYNONYM_MAP = {
+        "bucks": "dollars",
+        "accommodations": "rooms",
+        "cottages": "suites",
+        "photos": "pictures",
+    }
+
+    def _normalize_query(self, query: str) -> str:
+        """Replace synonyms with canonical terms"""
+        for synonym, canonical in self.SYNONYM_MAP.items():
+            query = re.sub(rf"\b{synonym}\b", canonical, query, flags=re.IGNORECASE)
+        return query
+    
+    # Intent detection methods
+    async def _needs_room_data(self, query: str, context: list) -> bool:
+        """Check if query requires room information"""
+        # First check explicit context markers
+        if any(c["metadata"].get("type") == "room" for c in context):
+            return True
+
+        # Then check query content
+        prompt = f"""Should the response include room listings for this query?
+        Query: {query}
+        Answer ONLY 'YES' or 'NO'"""
+
+        response = await self.openai.generate_chat_completion(
+            [{"role": "user", "content": prompt}]
         )
-
-        # Extract all relevant information
-        parsed_filters = await self._parse_filters(query)
-        rooms_data = await self._fetch_rooms_data(context_results, parsed_filters)
-        media_data = self._get_media_data(context_results, query)
-
-        # Generate response
-        response = await self._generate_response(
-            query,
-            context_results,
-            rooms_data,
-            history,
-            system_message or self.system_message,
-        )
-
-        return self._merge_media_data(response, media_data)
+        return "YES" in response.strip().upper()
 
     async def _parse_filters(self, query: str) -> dict:
         """Use OpenAI to extract structured filters from natural language"""
-        prompt = self.filter_template.format(query=query)
+        prompt = f"""Extract EXACT filters from this query. Return empty JSON if none.
+                Query: {query}
+                {self.filter_template}"""
         response = await self.openai.generate_chat_completion(
             [
                 {
@@ -121,7 +205,7 @@ class RAGOrchestrator:
 
         return filters
 
-    async def _fetch_rooms_data(self, context: list, filters: dict) -> list:
+    async def _fetch_rooms_data(self, context: list, parsed_filters: dict) -> list:
         """Combine Pinecone context with MongoDB filters"""
         room_ids = list(
             {
@@ -132,8 +216,19 @@ class RAGOrchestrator:
         )
 
         if room_ids:
-            return self.mongo.get_rooms_by_ids(room_ids, filters)
-        return self.mongo.get_all_rooms(filters)
+            return self.mongo.get_rooms_by_ids(room_ids, parsed_filters)
+        return self.mongo.get_all_rooms(parsed_filters)
+
+    async def _needs_media(self, query: str) -> bool:
+        """Check if media should be attached"""
+        prompt = f"""Does this query require visual media?
+        Query: {query}
+        Answer ONLY 'YES' or 'NO'"""
+
+        response = await self.openai.generate_chat_completion(
+            [{"role": "user", "content": prompt}]
+        )
+        return "YES" in response.strip().upper()
 
     async def _get_media_data(self, context: list, query: str) -> List[dict]:
         """Retrieve all relevant media files based on explicit or proactive triggers"""
@@ -200,27 +295,25 @@ class RAGOrchestrator:
         rooms_data: list,
         history: list,
         system_message: str,
+        needs_room_info: bool,
     ) -> dict:
+
         context_str = "\n".join([c["metadata"]["text"] for c in context])
-        rooms_str = "\n".join(
-            [
+
+        # Conditionally include room data
+        rooms_str = ""
+        if needs_room_info and rooms_data:
+            rooms_str = "\nAvailable Rooms:\n" + "\n".join(
                 f"{r['room_id']}: {r['description']} (${r['price']}/night)"
                 for r in rooms_data
-            ]
-        )
+            )
 
         messages = [
-            {"role": "system", "content": system_message or self.system_message},
+            {"role": "system", "content": system_message},
             *history,
             {
                 "role": "user",
-                "content": f"""Context:
-                            {context_str}
-
-                            Available Rooms:
-                            {rooms_str}
-
-                            Question: {query}""",
+                "content": f"Context:\n{context_str}\n\n{rooms_str}\n\nQuestion: {query}",
             },
         ]
 

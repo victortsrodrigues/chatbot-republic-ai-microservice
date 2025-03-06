@@ -29,3 +29,14 @@ class OpenAIHandler:
         except Exception as e:
             logger.error(f"Chat completion failed: {str(e)}")
             return "I'm having trouble answering that. Please try again later."
+        
+    async def check_moderation(self, input: str) -> bool:
+        try:
+            response = await self.client.moderations.create(
+                model="omni-moderation-latest",
+                input=input
+            )
+            return response.results[0].flagged
+        except Exception as e:
+            logger.error(f"Moderation check failed: {str(e)}")
+            return False
