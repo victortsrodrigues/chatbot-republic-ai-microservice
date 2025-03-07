@@ -6,6 +6,7 @@ from app.utils.logger import logger
 from typing import Optional, List, Dict
 import re
 import json
+import asyncio
 
 
 class RAGOrchestrator:
@@ -48,7 +49,6 @@ class RAGOrchestrator:
                                     }}
                                 }}"""
 
-    
     async def process_query(
         self,
         query: str,
@@ -56,56 +56,76 @@ class RAGOrchestrator:
         system_message: str = None,
         filter: Optional[dict] = None,
     ) -> dict:
-        
-        # Check query's moderation
-        if await self.openai.check_moderation(query):
-            return {"error": "Query not allowed"}
-        
-        # Correct typos using OpenAI
-        query = await self._correct_typos(query)
+        try:
+            # Check query's moderation
+            if await self.openai.check_moderation(query):
+                return {"error": "Query not allowed"}
 
-        # Normalize query
-        query = self._normalize_query(query)
+            # Correct typos using OpenAI
+            # Add retry decorator to critical components
+            query = await self._correct_typos_with_retry(query)
 
-        # Generate embedding and get context
-        embedding = await self.openai.generate_embedding(query)
-        context_results = await self.pinecone.query_index(
-            embedding=embedding, filter=filter, top_k=3
-        )
+            # Normalize query
+            query = self._normalize_query(query)
 
-        # NEW: Determine if room data is needed
-        requires_room_data = await self._needs_room_data(query, context_results)
+            # Generate embedding and get context
+            embedding = await self.openai.generate_embedding(query)
+            # Validate embedding result
+            if not isinstance(embedding, list) or len(embedding) != 1536:
+                raise ValueError("Invalid embedding format")
 
-        # Extract all relevant information
-        # Rooms
-        parsed_filters = await self._parse_filters(query) if requires_room_data else {}
-        rooms_data = (
-            await self._fetch_rooms_data(context_results, parsed_filters)
-            if requires_room_data
-            else []
-        )
-        # Media
-        media_data = (
-            self._get_media_data(context_results, query)
-            if await self._needs_media(query)
-            else []
-        )
+            context_results = await asyncio.wait_for(
+                self.pinecone.query_index(embedding=embedding, filter=filter, top_k=3),
+                timeout=5.0,
+            )
 
-        # Generate response
-        response = await self._generate_response(
-            query,
-            context_results,
-            rooms_data,
-            history,
-            system_message or self.system_message,
-            needs_room_info=requires_room_data,
-        )
+            # NEW: Determine if room data is needed
+            requires_room_data = await self._needs_room_data(query, context_results)
 
-        # Check response's moderation
-        if await self.openai.check_moderation(response):
-            return {"error": "Response not allowed"}
-        
-        return self._merge_media_data(response, media_data)
+            # Extract all relevant information
+            # Rooms
+            parsed_filters = (
+                await self._parse_filters(query) if requires_room_data else {}
+            )
+            rooms_data = (
+                await self._fetch_rooms_data(context_results, parsed_filters)
+                if requires_room_data
+                else []
+            )
+            # Media
+            media_data = (
+                self._get_media_data(context_results, query)
+                if await self._needs_media(query)
+                else []
+            )
+
+            # Generate response
+            response = await self._generate_response(
+                query,
+                context_results,
+                rooms_data,
+                history,
+                system_message or self.system_message,
+                needs_room_info=requires_room_data,
+            )
+
+            # Check response's moderation
+            if await self.openai.check_moderation(response):
+                return {"error": "Response not allowed"}
+
+            return self._merge_media_data(response, media_data)
+
+        except (asyncio.TimeoutError, ValueError) as e:
+            logger.error(f"Pipeline failed at stage: {str(e)}")
+            return {"error": "Pipeline failed"}
+
+    async def _correct_typos_with_retry(self, query: str, retries=2):
+        for attempt in range(retries):
+            try:
+                return await self._correct_typos(query)
+            except Exception:
+                if attempt == retries - 1:
+                    raise
 
     async def _correct_typos(self, query: str) -> str:
         """Correct typos using OpenAI"""
@@ -141,7 +161,7 @@ class RAGOrchestrator:
         for synonym, canonical in self.SYNONYM_MAP.items():
             query = re.sub(rf"\b{synonym}\b", canonical, query, flags=re.IGNORECASE)
         return query
-    
+
     # Intent detection methods
     async def _needs_room_data(self, query: str, context: list) -> bool:
         """Check if query requires room information"""

@@ -14,7 +14,3 @@ class RAGResponse(BaseModel):
     requires_action: bool
     action_type: Optional[str] = None  # 'fetch_media' or 'room_query'
     media_list: Optional[List[Dict]] = None  # Replace single media fields
-    # action_parameters: Optional[Dict] = None  # {type: 'availability'/'pricing', room_id: '123'}
-    # s3_object_key: Optional[str] = None
-    # media_type: Optional[str] = None
-    # caption: Optional[str] = None

@@ -1,4 +1,4 @@
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -9,7 +9,6 @@ class Settings(BaseSettings):
     
     # Pinecone Configuration
     pinecone_api_key: str
-    pinecone_env: str
     pinecone_index_name: str
     pinecone_cloud: str  # e.g., "aws" or "gcp"
     pinecone_region: str  # e.g., "us-west1"
@@ -17,14 +16,14 @@ class Settings(BaseSettings):
     # AWS Configuration
     aws_access_key_id: str
     aws_secret_access_key: str
-    aws_region: str = "us-east-1"
+    aws_region: str
     
     # S3 Configuration
     s3_bucket_name: str
     
     # MongoDB Configuration
-    mongo_uri: str = "mongodb://localhost:27017"
-    mongo_db: str = "student_republic"
+    mongo_uri: str
+    mongo_db: str
     
     # Application Settings
     max_history_length: int = 5
