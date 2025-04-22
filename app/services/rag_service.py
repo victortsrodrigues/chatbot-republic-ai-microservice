@@ -79,7 +79,7 @@ class RAGOrchestrator:
                 timeout=5.0,
             )
 
-            # NEW: Determine if room data is needed
+            # Determine if room data is needed
             requires_room_data = await self._needs_room_data(query, context_results)
 
             # Extract all relevant information

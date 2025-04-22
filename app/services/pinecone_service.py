@@ -7,6 +7,7 @@ from typing import List, Optional, Dict
 class PineconeManager:
     def __init__(self):
         self.index = self._initialize_index()
+        self._last_healthy = time.time()
 
     def _initialize_index(self):
         """Initialize Pinecone index, creating it if it doesn't exist."""
@@ -47,6 +48,11 @@ class PineconeManager:
     ) -> List[Dict]:
         """Query the Pinecone index for similar vectors."""
         try:
+            # Validate index health
+            if time.time() - self._last_healthy > 300:
+                if not self._check_index_health():
+                    raise ConnectionError("Unhealthy Pinecone index")
+            
             response = self.index.query(
                 vector=embedding,
                 filter=filter,
@@ -65,3 +71,12 @@ class PineconeManager:
         except Exception as e:
             logger.error(f"Pinecone upsert failed: {str(e)}")
             raise
+        
+    def _check_index_health(self):
+        try:
+            stats = self.index.describe_index_stats()
+            self._last_healthy = time.time()
+            return stats
+        except Exception as e:
+            logger.critical(f"Pinecone index unhealthy: {str(e)}")
+            return False
