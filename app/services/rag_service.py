@@ -80,7 +80,11 @@ class RAGOrchestrator:
             )
 
             # Determine if room data is needed
-            requires_room_data = await self._needs_room_data(query, context_results)
+            requires_room_data, requires_media = (
+                await self._decide_inclusions_room_data_and_media(
+                    query, context_results
+                )
+            )
 
             # Extract all relevant information
             # Rooms
@@ -88,15 +92,13 @@ class RAGOrchestrator:
                 await self._parse_filters(query) if requires_room_data else {}
             )
             rooms_data = (
-                await self._fetch_rooms_data(context_results, parsed_filters)
+                await self._fetch_rooms_data(parsed_filters)
                 if requires_room_data
                 else []
             )
             # Media
             media_data = (
-                self._get_media_data(context_results, query)
-                if await self._needs_media(query)
-                else []
+                self._get_media_data(context_results, query) if requires_media else []
             )
 
             # Generate response
@@ -163,21 +165,72 @@ class RAGOrchestrator:
         return query
 
     # Intent detection methods
-    async def _needs_room_data(self, query: str, context: list) -> bool:
-        """Check if query requires room information"""
+    async def _decide_inclusions_room_data_and_media(
+        self, query: str, context: list
+    ) -> tuple[bool, bool]:
+        """
+        Ask GPT whether to include room metadata and/or media links.
+        Returns (include_room_data, include_media_links).
+        """
         # First check explicit context markers
-        if any(c["metadata"].get("type") == "room" for c in context):
-            return True
+        relevant_rooms = [
+            match
+            for match in context
+            if match["score"] >= 0.8 and match["metadata"].get("type") == "room"
+        ]
+        if relevant_rooms:
+            # If we already know rooms are relevant, still let GPT decide media
+            include_room = True
+        else:
+            include_room = None  # defer to model
 
-        # Then check query content
-        prompt = f"""Should the response include room listings for this query?
-        Query: {query}
-        Answer ONLY 'YES' or 'NO'"""
+        # If no explicit markers, use OpenAI to analyze intent
+        prompt = [
+            {
+                "role": "system",
+                "content": """
+You are a decision engine. Given a user's query and some retrieved context,
+you must decide two things for the final chatbot response:
+1) include_room_data: whether to include room metadata (size, price, features, etc.).
+2) include_media: whether to include media URLs (images, videos).
 
-        response = await self.openai.generate_chat_completion(
-            [{"role": "user", "content": prompt}]
+Respond with a JSON object exactly like:
+{
+  "include_room_data": true|false,
+  "include_media": true|false
+}
+""",
+            },
+            {
+                "role": "user",
+                "content": f"""
+User query:
+"{query}"
+
+Retrieved context:
+{context}
+""",
+            },
+        ]
+
+        response = await self.openai.generate_chat_completion(prompt)
+        # Extract and parse the JSON decision
+        content = response.strip()
+        try:
+            decision = json.loads(content)
+        except json.JSONDecodeError:
+            # fallback defaults
+            return bool(include_room), False
+
+        # Merge explicit-room check if we short-circuited above
+        include_room_final = (
+            include_room
+            if include_room is not None
+            else bool(decision.get("include_room_data", False))
         )
-        return "YES" in response.strip().upper()
+        include_media = bool(decision.get("include_media", False))
+
+        return include_room_final, include_media
 
     async def _parse_filters(self, query: str) -> dict:
         """Use OpenAI to extract structured filters from natural language"""
@@ -210,75 +263,38 @@ class RAGOrchestrator:
                 "min": int(price_matches[0]),
                 "max": int(price_matches[1]),
             }
-        elif "cheaper than" in query:
-            max_price = re.search(r"cheaper than \$?(\d+)", query)
+        elif "mais barato" in query:
+            max_price = re.search(r"mais barato \$?(\d+)", query)
             if max_price:
                 filters["price"] = {"max": int(max_price.group(1))}
 
         # Feature extraction
         features = []
-        for term in ["suite", "balcony", "ocean view"]:  # Extend this list
+        for term in ["suíte", "varanda", "vista"]:  # Extend this list
             if term in query.lower():
                 features.append(term)
         if features:
             filters["features"] = features
 
+        # Availability
+        if "disponível" in query.lower():
+            filters["availability"] = True
+        elif "not available" in query.lower():
+            filters["availability"] = False
+
         return filters
 
-    async def _fetch_rooms_data(self, context: list, parsed_filters: dict) -> list:
+    async def _fetch_rooms_data(self, parsed_filters: dict) -> list:
         """Combine Pinecone context with MongoDB filters"""
-        room_ids = list(
-            {
-                c["metadata"]["room_id"]
-                for c in context
-                if c["metadata"].get("type") == "room"
-            }
-        )
-
-        if room_ids:
-            return self.mongo.get_rooms_by_ids(room_ids, parsed_filters)
         return self.mongo.get_all_rooms(parsed_filters)
-
-    async def _needs_media(self, query: str) -> bool:
-        """Check if media should be attached"""
-        prompt = f"""Does this query require visual media?
-        Query: {query}
-        Answer ONLY 'YES' or 'NO'"""
-
-        response = await self.openai.generate_chat_completion(
-            [{"role": "user", "content": prompt}]
-        )
-        return "YES" in response.strip().upper()
 
     async def _get_media_data(self, context: list, query: str) -> List[dict]:
         """Retrieve all relevant media files based on explicit or proactive triggers"""
         media_list = []
 
-        # 1. Check for explicit media requests
-        explicit_media = [
-            {
-                "s3_object_key": c["metadata"]["s3_object_key"],
-                "media_type": c["metadata"]["media_type"],
-                "caption": c["metadata"].get("caption", ""),
-            }
-            for c in context
-            if c["metadata"].get("type") == "media"
-        ]
-        media_list.extend(explicit_media)
+        
 
-        # 2. Check for proactive media suggestions
-        for c in context:
-            if c["metadata"].get("suggest_media", False):
-                if await self._should_attach_media(query, c["metadata"]):
-                    media_list.append(
-                        {
-                            "s3_object_key": c["metadata"]["s3_object_key"],
-                            "media_type": c["metadata"]["media_type"],
-                            "caption": c["metadata"].get("caption", ""),
-                        }
-                    )
-
-        # 3. Deduplicate media entries
+        # Deduplicate media entries
         unique_media = []
         seen_keys = set()
         for media in media_list:
@@ -288,25 +304,7 @@ class RAGOrchestrator:
 
         return unique_media
 
-    async def _should_attach_media(self, query: str, metadata: dict) -> bool:
-        """Determine if media should be attached proactively"""
-        # Check metadata triggers
-        if any(
-            trigger in query.lower() for trigger in metadata.get("media_triggers", [])
-        ):
-            return True
 
-        # Use OpenAI for intent analysis
-        prompt = f"""Should the response include media for this query?
-        Query: {query}
-        Context: {metadata.get('text', '')}
-        Answer ONLY 'YES' or 'NO'"""
-
-        response = await self.openai.generate_chat_completion(
-            [{"role": "user", "content": prompt}]
-        )
-
-        return "YES" in response.strip().upper()
 
     async def _generate_response(
         self,

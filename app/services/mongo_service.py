@@ -15,17 +15,17 @@ class MongoDBClient:
         self.db = self.client[settings.mongo_db]
         self.rooms = self.db.rooms
 
-    def get_rooms_by_ids(self, room_ids: List[str], filters: Dict) -> List[Dict]:
-        try:
-            if not isinstance(room_ids, list):
-                raise ValueError("room_ids must be a list")
+    # def get_rooms_by_ids(self, room_ids: List[str], filters: Dict) -> List[Dict]:
+    #     try:
+    #         if not isinstance(room_ids, list):
+    #             raise ValueError("room_ids must be a list")
                 
-            query = {"room_id": {"$in": room_ids}}
-            query.update(self._build_mongo_query(filters))
-            return list(self.rooms.find(query, {'_id': 0}))
-        except (PyMongoError, ValueError) as e:
-            logger.error(f"get_rooms_by_ids failed: {str(e)}")
-            return []
+    #         query = {"room_id": {"$in": room_ids}}
+    #         query.update(self._build_mongo_query(filters))
+    #         return list(self.rooms.find(query, {'_id': 0}))
+    #     except (PyMongoError, ValueError) as e:
+    #         logger.error(f"get_rooms_by_ids failed: {str(e)}")
+    #         return []
 
     def get_all_rooms(self, filters: Dict) -> List[Dict]:
         query = self._build_mongo_query(filters)
@@ -52,14 +52,17 @@ class MongoDBClient:
 
         # Process price operators
         if 'price' in filters:
-            price_ops = {}
-            for op in ['$lt', '$lte', '$gt', '$gte', '$eq']:
-                if op in filters['price']:
-                    converted_val = process_value(filters['price'][op])
-                    if isinstance(converted_val, (int, float)):
-                        price_ops[op] = converted_val
-            if price_ops:
-                mongo_query['price'] = price_ops
+            if isinstance(filters['price'], dict):  # Operators like $lt, $gt
+                price_ops = {}
+                for op in ['$lt', '$lte', '$gt', '$gte', '$eq']:
+                    if op in filters['price']:
+                        converted_val = process_value(filters['price'][op])
+                        if isinstance(converted_val, (int, float)):
+                            price_ops[op] = converted_val
+                if price_ops:
+                    mongo_query['price'] = price_ops
+            elif isinstance(filters['price'], (int, float)):  # Direct price match
+                mongo_query['price'] = filters['price']
 
         # Process features with array operators
         if 'features' in filters:
