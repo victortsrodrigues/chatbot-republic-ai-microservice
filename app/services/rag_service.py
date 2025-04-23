@@ -15,9 +15,9 @@ class RAGOrchestrator:
         self.pinecone = PineconeManager()
         self.mongo = MongoDBClient()
         self.system_message = settings.default_system_message
-        self.filter_template = """Convert this query to MongoDB JSON syntax:
+        self.filter_template = """Converta esta query para a sintaxe JSON do MongoDB:
                                 {query}
-                                Use this schema (all fields optional):
+                                Use este esquema (todos os campos são opcionais):
                                 {{
                                     "price"?: {{
                                         "$lt"?: number,
@@ -97,9 +97,7 @@ class RAGOrchestrator:
                 else []
             )
             # Media
-            media_data = (
-                self._get_media_data(context_results, query) if requires_media else []
-            )
+            media_data = self._get_media_data(rooms_data) if requires_media else []
 
             # Generate response
             response = await self._generate_response(
@@ -131,16 +129,16 @@ class RAGOrchestrator:
 
     async def _correct_typos(self, query: str) -> str:
         """Correct typos using OpenAI"""
-        prompt = f"""Correct any typos in this query. Return only the corrected text.
-        Original query: '{query}'
-        Corrected query:"""
+        prompt = f"""Corrija quaisquer erros de digitação nesta query. Retorne apenas o texto corrigido.
+        Query original: '{query}'
+        Query corrigida:"""
 
         try:
             response = await self.openai.generate_chat_completion(
                 [
                     {
                         "role": "system",
-                        "content": "You are a skilled proofreader. Only return the corrected text.",
+                        "content": "Você é um revisor habilidoso. Devolva apenas o texto corrigido.",
                     },
                     {"role": "user", "content": prompt},
                 ]
@@ -152,10 +150,9 @@ class RAGOrchestrator:
 
     # Add synonym mapping
     SYNONYM_MAP = {
-        "bucks": "dollars",
-        "accommodations": "rooms",
-        "cottages": "suites",
-        "photos": "pictures",
+        "valor": "preço",
+        "acomodações": "quartos",
+        "lugares": "quartos",
     }
 
     def _normalize_query(self, query: str) -> str:
@@ -189,12 +186,12 @@ class RAGOrchestrator:
             {
                 "role": "system",
                 "content": """
-You are a decision engine. Given a user's query and some retrieved context,
-you must decide two things for the final chatbot response:
-1) include_room_data: whether to include room metadata (size, price, features, etc.).
-2) include_media: whether to include media URLs (images, videos).
+Você é um mecanismo de decisão. Dada uma pergunta de um usuário e um contexto recuperado,
+você deve decidir duas coisas para a resposta final do chatbot:
+1) include_room_data: se deve incluir informações do quarto (tamanho, preço, recursos etc.).
+2) include_media: se deve incluir mídia (imagens, vídeos).
 
-Respond with a JSON object exactly like:
+Responda com um objeto JSON exatamente assim:
 {
   "include_room_data": true|false,
   "include_media": true|false
@@ -204,10 +201,10 @@ Respond with a JSON object exactly like:
             {
                 "role": "user",
                 "content": f"""
-User query:
+Query do usuário:
 "{query}"
 
-Retrieved context:
+Contexto recuperado:
 {context}
 """,
             },
@@ -241,7 +238,7 @@ Retrieved context:
             [
                 {
                     "role": "system",
-                    "content": "You are a skilled query parser. Return only valid JSON.",
+                    "content": "Você é um analisador de query habilidoso. Retorne apenas JSON válido.",
                 },
                 {"role": "user", "content": prompt},
             ]
@@ -279,8 +276,6 @@ Retrieved context:
         # Availability
         if "disponível" in query.lower():
             filters["availability"] = True
-        elif "not available" in query.lower():
-            filters["availability"] = False
 
         return filters
 
@@ -288,23 +283,26 @@ Retrieved context:
         """Combine Pinecone context with MongoDB filters"""
         return self.mongo.get_all_rooms(parsed_filters)
 
-    async def _get_media_data(self, context: list, query: str) -> List[dict]:
-        """Retrieve all relevant media files based on explicit or proactive triggers"""
-        media_list = []
+    async def _get_media_data(self, rooms_data: list = None) -> List[dict]:
+        """Extract S3 object keys from rooms data"""
+        # If no rooms data, return empty list
+        if not rooms_data:
+            return []
 
-        
+        media_keys = []
 
-        # Deduplicate media entries
-        unique_media = []
-        seen_keys = set()
-        for media in media_list:
-            if media["s3_object_key"] not in seen_keys:
-                unique_media.append(media)
-                seen_keys.add(media["s3_object_key"])
+        # Extract s3_object_keys from each room
+        for room in rooms_data:
+            if "s3_object_key" in room:
+                # If it's a single string
+                if isinstance(room["s3_object_key"], str):
+                    media_keys.append(room["s3_object_key"])
+                # If it's a list
+                elif isinstance(room["s3_object_key"], list):
+                    media_keys.extend(room["s3_object_key"])
 
-        return unique_media
-
-
+        # Remove duplicates while preserving order
+        return list(dict.fromkeys(media_keys))
 
     async def _generate_response(
         self,
@@ -316,13 +314,13 @@ Retrieved context:
         needs_room_info: bool,
     ) -> dict:
 
-        context_str = "\n".join([c["metadata"]["text"] for c in context])
+        context_str = "\n".join([c["metadata"] for c in context])
 
         # Conditionally include room data
         rooms_str = ""
         if needs_room_info and rooms_data:
             rooms_str = "\nAvailable Rooms:\n" + "\n".join(
-                f"{r['room_id']}: {r['description']} (${r['price']}/night)"
+                f"{r['room_id']}: {r['description']} (${r['price']}/month)"
                 for r in rooms_data
             )
 

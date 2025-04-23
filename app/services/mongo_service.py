@@ -29,7 +29,8 @@ class MongoDBClient:
 
     def get_all_rooms(self, filters: Dict) -> List[Dict]:
         query = self._build_mongo_query(filters)
-        return list(self.rooms.find(query, {'_id': 0}))
+        projection = {'_id': 0}
+        return list(self.rooms.find(query, projection))
 
     def _build_mongo_query(self, filters: Dict) -> Dict:
         """Convert structured filters to MongoDB query with recursive processing"""       
