@@ -1,10 +1,10 @@
 {
-  "room_id": "888",
-  "description": "Outro quarto para teste",
-  "price": 1,
-  "features": ["teste", "caro", "temporário"],
-  "s3_object_key": "aaaaaaaaaaaaaa",
-  "availability": false,
+  "room_id": "42",
+  "description": "Quarto com bascula",
+  "price": 900,
+  "features": ["bascula"],
+  "s3_object_key": "teste",
+  "availability": true,
   "created_at": "2023-10-15",
-  "updated_at": "2023-10-26"
+  "updated_at": "2025-04-23"
 }

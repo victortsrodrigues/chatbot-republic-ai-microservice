@@ -43,7 +43,6 @@ class PineconeManager:
     async def query_index(
         self,
         embedding: List[float],
-        filter: Optional[Dict] = None,
         top_k: int = 3
     ) -> List[Dict]:
         """Query the Pinecone index for similar vectors."""
@@ -55,7 +54,6 @@ class PineconeManager:
             
             response = self.index.query(
                 vector=embedding,
-                filter=filter,
                 top_k=top_k,
                 include_metadata=True
             )

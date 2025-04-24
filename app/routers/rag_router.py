@@ -20,7 +20,6 @@ async def handle_rag_query(query: RAGQuery):
             query=query.query,
             history=query.history,
             system_message=query.system_message,
-            filter=query.filter
         )
         
         logger.info(f"Successfully processed query: {query.query}")

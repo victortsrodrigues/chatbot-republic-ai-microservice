@@ -6,7 +6,6 @@ class RAGQuery(BaseModel):
     user_id: str
     history: list[Dict] = []  # Conversation history
     system_message: Optional[str] = None  # Custom system message
-    filter: Optional[Dict] = None  # Pinecone metadata filter
 
 class RAGResponse(BaseModel):
     response: str

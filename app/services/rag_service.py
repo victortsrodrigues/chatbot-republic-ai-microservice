@@ -54,7 +54,6 @@ class RAGOrchestrator:
         query: str,
         history: list,
         system_message: str = None,
-        filter: Optional[dict] = None,
     ) -> dict:
         try:
             # Check query's moderation
@@ -75,7 +74,7 @@ class RAGOrchestrator:
                 raise ValueError("Invalid embedding format")
 
             context_results = await asyncio.wait_for(
-                self.pinecone.query_index(embedding=embedding, filter=filter, top_k=3),
+                self.pinecone.query_index(embedding=embedding, top_k=3),
                 timeout=5.0,
             )
 
@@ -283,7 +282,7 @@ Contexto recuperado:
         """Combine Pinecone context with MongoDB filters"""
         return self.mongo.get_all_rooms(parsed_filters)
 
-    async def _get_media_data(self, rooms_data: list = None) -> List[dict]:
+    def _get_media_data(self, rooms_data: list = None) -> List[dict]:
         """Extract S3 object keys from rooms data"""
         # If no rooms data, return empty list
         if not rooms_data:
