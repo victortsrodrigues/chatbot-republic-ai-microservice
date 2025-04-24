@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     pinecone_index_name: str
     pinecone_cloud: str  # e.g., "aws" or "gcp"
     pinecone_region: str  # e.g., "us-west1"
+    pinecone_max_retries: int = 10
 
     # AWS Configuration
     aws_access_key_id: str

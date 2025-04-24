@@ -1,36 +1,44 @@
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, PyMongoError
+from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import settings
 from typing import List, Dict
 from app.utils.logger import logger
 
 class MongoDBClient:
-    def __init__(self):
+    _instance = None
+    _client = None
+    
+    def __new__(cls):
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            try:
+                # Async connection pool setup
+                cls._client = AsyncIOMotorClient(
+                    settings.mongo_uri,
+                    maxPoolSize=100,
+                    minPoolSize=10,
+                    serverSelectionTimeoutMS=5000
+                )
+                # Initialize database reference
+                cls._instance.db = cls._client.get_database(settings.mongo_db)
+                logger.info("MongoDB connection pool initialized")
+            except Exception as e:
+                logger.critical(f"MongoDB connection failed: {str(e)}")
+                raise
+        return cls._instance
+    
+    async def get_all_rooms(self, filters: Dict) -> List[Dict]:
+        """Async room query using Motor client"""
         try:
-            self.client = MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=5000)
-            self.client.admin.command('ping')  # Test connection
-        except ConnectionFailure:
-            logger.critical("MongoDB connection failed. Server not available.")
-            raise
-        self.db = self.client[settings.mongo_db]
-        self.rooms = self.db.rooms
-
-    # def get_rooms_by_ids(self, room_ids: List[str], filters: Dict) -> List[Dict]:
-    #     try:
-    #         if not isinstance(room_ids, list):
-    #             raise ValueError("room_ids must be a list")
-                
-    #         query = {"room_id": {"$in": room_ids}}
-    #         query.update(self._build_mongo_query(filters))
-    #         return list(self.rooms.find(query, {'_id': 0}))
-    #     except (PyMongoError, ValueError) as e:
-    #         logger.error(f"get_rooms_by_ids failed: {str(e)}")
-    #         return []
-
-    def get_all_rooms(self, filters: Dict) -> List[Dict]:
-        query = self._build_mongo_query(filters)
-        projection = {'_id': 0}
-        return list(self.rooms.find(query, projection))
+            query = self._build_mongo_query(filters)
+            return await self.db.rooms.find(
+                query, 
+                {'_id': 0}
+            ).to_list(length=1000)
+        except Exception as e:
+            logger.error(f"Mongo query failed: {str(e)}")
+            return []
 
     def _build_mongo_query(self, filters: Dict) -> Dict:
         """Convert structured filters to MongoDB query with recursive processing"""       

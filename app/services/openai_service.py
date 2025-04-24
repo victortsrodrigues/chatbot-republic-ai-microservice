@@ -10,8 +10,8 @@ class OpenAIRateLimiter:
     """Global rate limiter to be shared across all client connections"""
     def __init__(self):
         # Rate limiting parameters
-        self.rpm_limit = 60  # Requests per minute (adjust based on your OpenAI plan)
-        self.tpm_limit = 100000  # Tokens per minute (adjust based on your OpenAI plan)
+        self.rpm_limit = 60  # Requests per minute
+        self.tpm_limit = 100000  # Tokens per minute
         self._request_timestamps = deque(maxlen=self.rpm_limit)
         self._token_usage = deque(maxlen=100)  # Track recent token usage
         self._lock = asyncio.Lock()
