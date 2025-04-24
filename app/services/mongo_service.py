@@ -1,5 +1,4 @@
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, PyMongoError
+from pymongo.errors import PyMongoError
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import settings
 from typing import List, Dict

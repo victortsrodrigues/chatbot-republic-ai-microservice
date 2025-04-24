@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     openai_api_key: str
     embedding_model: str = "text-embedding-ada-002"
     chat_model: str = "gpt-3.5-turbo"
+    openai_rpm_limit: int = 60  
+    openai_tpm_limit: int = 90_000
+    openai_max_concurrent_requests: int = 10
+    openai_circuit_reset: int = 120
 
     # Pinecone Configuration
     pinecone_api_key: str
@@ -33,6 +37,14 @@ class Settings(BaseSettings):
     mongo_max_pool_size: int = 100
     mongo_min_pool_size: int = 10
 
+    # RAG Configuration
+    rag_max_concurrent: int = 50  # Simultaneous requests
+    rag_circuit_timeout: int = 60  # Seconds
+    rag_cache_max_items: int = 1000
+    rag_cache_ttl: int = 300
+    rag_retries: int = 3
+    rag_retry_backoff: int = 2
+    
     # Application Settings
     max_history_length: int = 5
     default_system_message: str = (
