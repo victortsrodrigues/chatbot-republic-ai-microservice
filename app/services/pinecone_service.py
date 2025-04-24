@@ -1,172 +1,148 @@
 import time
 import asyncio
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import PineconeAsyncio, ServerlessSpec
 from app.config import settings
 from app.utils.logger import logger
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Dict, Any
 
 class PineconeManager:
-    def __init__(self):
-        self.pc = None
-        self.index = None
-        self._last_healthy = 0
-        self._health_lock = asyncio.Lock()
-        self._init_lock = asyncio.Lock()
+    _instance = None
+    _circuit_state = "closed"
+    _last_failure = 0.0
 
-    async def initialize(self):
-        """Asynchronously initialize the Pinecone client and index"""
-        async with self._init_lock:  # Prevent multiple concurrent initializations
+    def __new__(cls):
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            cls._instance.pc = PineconeAsyncio(api_key=settings.pinecone_api_key)  # CHANGED: singleton async client
+            cls._instance.index = None
+            cls._instance._last_healthy = 0.0
+            cls._instance._health_lock = asyncio.Lock()
+            cls._instance._init_lock = asyncio.Lock()
+        return cls._instance
+
+    async def initialize(self) -> Any:
+        """Initialize client and index safely across coroutines"""
+        async with self._init_lock:
             if self.index is not None:
                 return self.index
-                
             try:
-                # Initialize Pinecone client
-                logger.info("Initializing Pinecone client...")
-                self.pc = Pinecone(api_key=settings.pinecone_api_key)
-                
-                # Use async executor for CPU-bound or blocking operations
-                loop = asyncio.get_event_loop()
-                existing_indexes = await loop.run_in_executor(
-                    None, lambda: self.pc.list_indexes().names()
-                )
-                logger.info(f"Existing Pinecone indexes: {existing_indexes}")
-                
-                # Check if index exists, create if it doesn't
-                if settings.pinecone_index_name not in existing_indexes:
-                    await self._create_new_index()
+                logger.info("Initializing Pinecone async client...")
+                await self.pc.__aenter__()  # enter async context
+
+                # list or create index
+                existing = await self.pc.list_indexes()
+                if settings.pinecone_index_name not in existing.names():
+                    await self._create_index_with_retry()  # CHANGED: use retry logic
                 else:
-                    logger.info(f"Using existing index: {settings.pinecone_index_name}")
-                
-                # Get the index object
-                self.index = self.pc.Index(settings.pinecone_index_name)
-                
-                # Validate index is working with a health check
+                    logger.info(f"Index exists: {settings.pinecone_index_name}")
+
+                # prepare data-plane client
+                host = settings.pinecone_host  # ensure host in settings
+                self.index = self.pc.IndexAsyncio(host=host)
+
+                # initial health check
                 if not await self._check_index_health():
-                    raise ConnectionError("Could not validate Pinecone index health")
-                    
+                    raise ConnectionError("Index health check failed on init")
+
                 return self.index
-                
             except Exception as e:
-                logger.error(f"Failed to initialize Pinecone: {e}")
+                logger.critical(f"Initialization failed: {e}")
+                await self._handle_failure()
                 raise
 
-    async def _create_new_index(self):
-        """Helper method to create a new index with proper async handling"""
-        logger.info(f"Creating new Pinecone index: {settings.pinecone_index_name}")
-        loop = asyncio.get_event_loop()
-        
-        try:
-            # Create index (blocking operation, use run_in_executor)
-            await loop.run_in_executor(
-                None,
-                lambda: self.pc.create_index(
-                    settings.pinecone_index_name,
-                    dimension=1536,  # Match embedding dimension
-                    metric="cosine",
-                    spec=ServerlessSpec(
-                        cloud=settings.pinecone_cloud,
-                        region=settings.pinecone_region
-                    )
-                )
-            )
-            
-            # Wait for index to be ready
-            logger.info(f"Waiting for index {settings.pinecone_index_name} to be ready...")
-            ready = False
-            retries = 0
-            max_retries = settings.pinecone_max_retries if hasattr(settings, 'pinecone_max_retries') else 10
-            
-            while not ready and retries < max_retries:
-                try:
-                    status = await loop.run_in_executor(
-                        None, 
-                        lambda: self.pc.describe_index(settings.pinecone_index_name).status
-                    )
-                    ready = status.get("ready", False)
-                    if not ready:
-                        retries += 1
-                        wait_time = min(2 ** retries, 60)  # Exponential backoff with 60s cap
-                        logger.info(f"Index not ready, waiting {wait_time}s... (attempt {retries}/{max_retries})")
-                        await asyncio.sleep(wait_time)
-                    else:
-                        logger.info("Index is ready")
-                except Exception as e:
-                    logger.error(f"Error checking index status: {e}")
-                    retries += 1
-                    await asyncio.sleep(2)
-                        
-            if not ready:
-                # Index creation started but didn't become ready - consider cleanup
-                logger.error(f"Index not ready after {max_retries} retries")
-                raise RuntimeError(f"Index not ready after {max_retries} retries")
-                
-        except Exception as e:
-            logger.error(f"Failed to create index: {e}")
-            # Try to clean up the failed index
+    async def _create_index_with_retry(self):
+        """Create index with exponential backoff"""
+        retries = 0
+        max_retries = getattr(settings, 'pinecone_max_retries', 5)
+        backoff = 1
+        while retries < max_retries:
             try:
-                await loop.run_in_executor(
-                    None,
-                    lambda: self.pc.delete_index(settings.pinecone_index_name)
+                await self.pc.create_index(
+                    name=settings.pinecone_index_name,
+                    dimension=settings.pinecone_dimension,
+                    metric="cosine",
+                    spec=ServerlessSpec(cloud=settings.pinecone_cloud,
+                                         region=settings.pinecone_region)
                 )
-                logger.info(f"Cleaned up failed index: {settings.pinecone_index_name}")
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to clean up index: {cleanup_err}")
-            raise e  # Re-raise the original exception
-                
-    async def query_index(
-        self,
-        embedding: List[float],
-        top_k: int = 3,
-        include_metadata: bool = True
-    ) -> List[Dict]:
-        """Query the Pinecone index for similar vectors."""
-        # Ensure index is initialized
+                # wait readiness
+                await self._wait_for_ready()
+                return
+            except Exception as e:
+                retries += 1
+                logger.warning(f"Index creation attempt {retries} failed: {e}")
+                await asyncio.sleep(backoff)
+                backoff *= 2
+        raise RuntimeError(f"Failed to create index after {max_retries} attempts")
+
+    async def _wait_for_ready(self, timeout: int = 300):
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                desc = await self.pc.describe_index(name=settings.pinecone_index_name)
+                if getattr(desc.status, 'ready', False):
+                    logger.info("Index ready")
+                    return
+            except Exception as e:
+                logger.warning(f"Readiness check error: {e}")
+            await asyncio.sleep(2)
+        raise TimeoutError("Index not ready within timeout")
+
+    async def query_index(self, embedding: List[float], top_k: int = 3,
+                          namespace: str = "knowledge-base", include_metadata: bool = True) -> List[Dict[str, Any]]:
+        """Query with circuit breaker and health checks"""
+        # circuit breaker
+        if self._circuit_state == "open" and time.time() - self._last_failure < settings.pinecone_circuit_timeout:
+            logger.warning("Circuit open - skipping query")
+            return []
+
         if self.index is None:
             await self.initialize()
-            
+
         try:
-            # Validate index health if needed (with debouncing)
+            # periodic health check
             await self._ensure_index_healthy()
-            
-            # Run the query in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.index.query(
-                    vector=embedding,
-                    top_k=top_k,
-                    include_metadata=include_metadata,
-                )
+
+            response = await self.index.query(
+                vector=embedding,
+                top_k=top_k,
+                namespace=namespace,
+                include_metadata=include_metadata
             )
-            return response.get("matches", [])
+            self._circuit_state = "closed"
+            return response.matches
         except Exception as e:
-            logger.error(f"Pinecone query failed: {str(e)}")
+            logger.error(f"Query error: {e}")
+            await self._handle_failure()
             return []
 
     async def _ensure_index_healthy(self):
-        """Check index health with debouncing and concurrency control"""
-        current_time = time.time()
-        
-        # Only check health if it's been more than 5 minutes since last check
-        if current_time - self._last_healthy > 300:
-            async with self._health_lock:  # Prevent concurrent health checks
-                # Double-check after acquiring lock (another thread might have updated)
-                if current_time - self._last_healthy > 300:
-                    healthy = await self._check_index_health()
-                    if not healthy:
-                        raise ConnectionError("Unhealthy Pinecone index")
-        
+        now = time.time()
+        if now - self._last_healthy > settings.pinecone_health_interval:
+            async with self._health_lock:
+                if now - self._last_healthy > settings.pinecone_health_interval:
+                    if not await self._check_index_health():
+                        raise ConnectionError("Unhealthy index")
+
     async def _check_index_health(self) -> bool:
-        """Check if the Pinecone index is healthy"""
         try:
-            loop = asyncio.get_event_loop()
-            stats = await loop.run_in_executor(
-                None,
-                lambda: self.index.describe_index_stats()
-            )
+            desc = await self.pc.describe_index(name=settings.pinecone_index_name)
+            ready = getattr(desc.status, 'ready', False)
             self._last_healthy = time.time()
-            logger.debug(f"Pinecone index health check passed: {stats}")
-            return True
+            return ready
         except Exception as e:
-            logger.critical(f"Pinecone index unhealthy: {str(e)}")
+            logger.error(f"Health check failed: {e}")
             return False
+
+    async def _handle_failure(self):
+        self._circuit_state = "open"
+        self._last_failure = time.time()
+        # cleanup
+        try:
+            await self.pc.__aexit__(None, None, None)
+        except Exception as e:
+            logger.warning(f"Cleanup error: {e}")
+        self.index = None
+
+    async def close(self):
+        """Shutdown client"""
+        await self._handle_failure()  # CHANGED: reuse failure cleanup for exit

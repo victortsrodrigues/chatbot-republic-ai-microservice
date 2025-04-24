@@ -16,14 +16,14 @@ class MongoDBClient:
                 # Async connection pool setup
                 cls._client = AsyncIOMotorClient(
                     settings.mongo_uri,
-                    maxPoolSize=100,
-                    minPoolSize=10,
+                    maxPoolSize=settings.mongo_max_pool_size if hasattr(settings, 'mongo_max_pool_size') else 100,
+                    minPoolSize=settings.mongo_min_pool_size if hasattr(settings, 'mongo_min_pool_size') else 10,
                     serverSelectionTimeoutMS=5000
                 )
                 # Initialize database reference
                 cls._instance.db = cls._client.get_database(settings.mongo_db)
                 logger.info("MongoDB connection pool initialized")
-            except Exception as e:
+            except PyMongoError as e:
                 logger.critical(f"MongoDB connection failed: {str(e)}")
                 raise
         return cls._instance
@@ -32,10 +32,8 @@ class MongoDBClient:
         """Async room query using Motor client"""
         try:
             query = self._build_mongo_query(filters)
-            return await self.db.rooms.find(
-                query, 
-                {'_id': 0}
-            ).to_list(length=1000)
+            cursor = self.db.rooms.find(query, {'_id': 0})
+            return await cursor.to_list(length=1000)
         except Exception as e:
             logger.error(f"Mongo query failed: {str(e)}")
             return []
@@ -117,3 +115,8 @@ class MongoDBClient:
             }
 
         return mongo_query
+    
+    async def close(self) -> None:
+        """Close the MongoDB client and free resources"""
+        # CHANGED: gracefully close motor client
+        self._client.close()
