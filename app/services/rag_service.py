@@ -168,7 +168,7 @@ class RAGOrchestrator:
                 raise
 
     @async_retry(max_retries=3)
-    async def process_query(self, query: str, history: list, system_message: str = None) -> dict:
+    async def process_query(self, query: str, history: list, system_message: str = None, user_id: str = None) -> dict:
         """Process user query with enhanced concurrency and error handling"""
         # Circuit breaker check
         if self.circuit_breaker.should_reject():
@@ -179,19 +179,19 @@ class RAGOrchestrator:
             await self.initialize()
         
         async with self._request_semaphore:
-            cache_key = self._generate_cache_key(query, history, system_message)
+            cache_key = self._generate_cache_key(query, history, system_message, user_id)
             if cached := self._response_cache.get(cache_key):
-                logger.info("Cache hit for query")
+                logger.info("Cache hit for query from user {user_id}")
                 return cached
 
             try:
                 return await self._process_query_unsafe(query, history, system_message, cache_key)
             except (asyncio.TimeoutError, ValueError) as e:
-                logger.error(f"Pipeline failure: {str(e)}")
+                logger.error(f"Pipeline failure for user {user_id}: {str(e)}")
                 self.circuit_breaker.record_failure()
                 return {"error": "Processing timeout", "detail": str(e)}
             except Exception as e:
-                logger.error(f"Unexpected error: {str(e)}")
+                logger.error(f"Unexpected error for user {user_id}: {str(e)}")
                 self.circuit_breaker.record_failure()
                 return {"error": "Internal error", "detail": str(e)}
 
@@ -246,10 +246,10 @@ class RAGOrchestrator:
         self._response_cache[cache_key] = final_response
         return final_response
 
-    def _generate_cache_key(self, query: str, history: list, system_message: str) -> str:
+    def _generate_cache_key(self, query: str, history: list, system_message: str, user_id: str) -> str:
         """Generate consistent cache key with hash for efficiency"""
         history_str = json.dumps(history[-5:] if history else [], sort_keys=True)
-        return f"{hash(query)}:{hash(history_str)}:{hash(system_message or self.system_message)}"
+        return f"{user_id}:{hash(query)}:{hash(history_str)}:{hash(system_message or self.system_message)}"
 
     def _validate_embedding(self, embedding: List[float]) -> bool:
         """Validate embedding dimensions using configurable setting"""

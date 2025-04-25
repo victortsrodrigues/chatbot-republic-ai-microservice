@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from app.models.schemas import RAGQuery, RAGResponse
 from app.services.rag_service import RAGOrchestrator
+from app.services.openai_service import user_rate_limiter
 from app.utils.logger import logger
 import asyncio
 
@@ -12,6 +13,9 @@ async def handle_rag_query(query: RAGQuery):
     Handle a RAG query by processing the user's input, retrieving relevant context,
     and generating a response.
     """
+    allowed = await user_rate_limiter.check_user_limit(query.user_id)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Too many requests, please retry later.")
     
     try:
             # Get or initialize the RAG orchestrator
@@ -20,14 +24,15 @@ async def handle_rag_query(query: RAGQuery):
                 await rag_orchestrator.initialize()
             
             # Process the query
-            logger.info(f"Processing query: {query.query[:50]}...")
+            logger.info(f"Processing query from user {query.user_id}: {query.query[:50]}...")
             result = await rag_orchestrator.process_query(
                 query=query.query,
                 history=query.history,
                 system_message=query.system_message,
+                user_id=query.user_id,
             )
             
-            logger.info(f"Successfully processed query: {query.query[:50]}...")
+            logger.info(f"Successfully processed query for user {query.user_id}: {query.query[:50]}...")
             return RAGResponse(**result)
         
     except asyncio.TimeoutError:

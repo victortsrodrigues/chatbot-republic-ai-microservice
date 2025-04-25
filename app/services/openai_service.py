@@ -316,3 +316,26 @@ class OpenAIHandler:
         if getattr(self, "initialized", False):
             await self.client.__aexit__(None, None, None)
             self.initialized = False
+            
+            
+class UserBasedRateLimiter:
+    def __init__(self):
+        self.user_requests = {}
+        self.lock = asyncio.Lock()
+        
+    async def check_user_limit(self, user_id: str, max_requests_per_minute: int = 10) -> bool:
+        """Limit requests per user per minute."""
+        async with self.lock:
+            now = time.time()
+            timestamps = self.user_requests.setdefault(user_id, [])
+            # Keep only requests in the last 60s
+            valid = [ts for ts in timestamps if now - ts < 60]
+            if len(valid) >= max_requests_per_minute:
+                self.user_requests[user_id] = valid
+                return False
+            # Record this request
+            valid.append(now)
+            self.user_requests[user_id] = valid
+            return True
+        
+user_rate_limiter = UserBasedRateLimiter()
