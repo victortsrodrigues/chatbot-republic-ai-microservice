@@ -3,3 +3,15 @@ tenacity-9.1.2
 tiktoken-0.9.0
 cachetools-5.5.2
 uvicorn-0.34.2
+pytest-asyncio-0.26.0
+pytest-tornasync-0.6.0.post2
+tornado-6.4.2
+pytest-trio-0.8.0
+decorator-5.2.1
+pytest-twisted-1.14.3
+automat-25.4.16
+constantly-23.10.4 
+hyperlink-21.0.0 
+incremental-24.7.2 
+twisted-24.11.0 
+zope-interface-7.2
