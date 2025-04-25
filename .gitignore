@@ -3,3 +3,5 @@ env/
 .env.debug
 todo.txt
 test.py
+__pycache__/
+.pytest_cache/
