@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 class RAGQuery(BaseModel):
     query: str
@@ -11,5 +11,5 @@ class RAGResponse(BaseModel):
     response: str
     sources: List[Dict]  # Metadata from Pinecone
     requires_action: bool
-    action_type: Optional[str] = None  # 'fetch_media' or 'room_query'
-    media_list: Optional[List[Dict]] = None  # Replace single media fields
+    action_type: Optional[str] = None  # 'fetch_media'
+    media_list: Optional[List[Union[str, Dict]]] = None  # Replace single media fields

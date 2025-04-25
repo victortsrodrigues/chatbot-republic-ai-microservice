@@ -83,8 +83,8 @@ class RAGOrchestrator:
         
         # Circuit breaker with configurable settings
         self.circuit_breaker = CircuitBreaker(
-            failure_threshold=getattr(settings, 'rag_circuit_failure_threshold', 5),
-            reset_timeout=getattr(settings, 'rag_circuit_timeout', 120)
+            failure_threshold=settings.rag_circuit_failure_threshold,
+            reset_timeout=settings.rag_circuit_reset_timeout
         )
         
         # Configured concurrency limits
@@ -488,6 +488,8 @@ Contexto recuperado:
             close_ops.append(self.openai.close())
         if self.pinecone:
             close_ops.append(self.pinecone.close())
+        if self.mongo:
+            close_ops.append(self.mongo.close())
         
         try:
             await asyncio.gather(*close_ops)

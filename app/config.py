@@ -1,5 +1,4 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -38,12 +37,14 @@ class Settings(BaseSettings):
     mongo_min_pool_size: int = 10
 
     # RAG Configuration
-    rag_max_concurrent: int = 50  # Simultaneous requests
+    rag_max_concurrent_requests: int = 50  # Simultaneous requests
     rag_circuit_timeout: int = 60  # Seconds
-    rag_cache_max_items: int = 1000
+    rag_cache_maxsize: int = 1000
     rag_cache_ttl: int = 300
     rag_retries: int = 3
     rag_retry_backoff: int = 2
+    rag_circuit_failure_threshold: int = 5   # max failures before open
+    rag_circuit_reset_timeout: int = 120     # seconds before reset
     
     # Application Settings
     max_history_length: int = 5
