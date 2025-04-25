@@ -60,16 +60,15 @@ class OpenAIRateLimiter:
 
             # Wait if we're approaching limits
             if (
-                request_count >= self.rpm_limit
-                or token_count + token_estimate > self.tpm_limit
+                (request_count >= self.rpm_limit or token_count + token_estimate > self.tpm_limit)
+                and self._request_timestamps
             ):
-                if self._request_timestamps:
-                    # Calculate wait time based on oldest timestamp
-                    wait_time = max(0.1, 60 - (now - self._request_timestamps[0]) + 0.1)
-                    logger.warning(f"Rate limit approaching, waiting {wait_time:.2f}s")
-                    await asyncio.sleep(wait_time)
-                    # Recursive check after waiting
-                    return await self.check_and_wait(token_estimate)
+                # Calculate wait time based on oldest timestamp
+                wait_time = max(0.1, 60 - (now - self._request_timestamps[0]) + 0.1)
+                logger.warning(f"Rate limit approaching, waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+                # Recursive check after waiting
+                return await self.check_and_wait(token_estimate)
 
     async def update_usage(self, tokens_used: int) -> None:
         """Update rate limit tracking after a successful request"""
@@ -93,10 +92,11 @@ class OpenAIHandler:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    async def initialize(self):  # CHANGED: ensure client context is entered once
+    async def initialize(self):
         async with self._init_lock:
             if getattr(self, "initialized", False):
                 return
+            logger.info("Initializing OpenAI async client...")
             await self.client.__aenter__()
             self.initialized = True
 

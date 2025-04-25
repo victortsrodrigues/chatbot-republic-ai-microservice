@@ -31,6 +31,7 @@ class MongoDBClient:
         """Async room query using Motor client"""
         try:
             query = self._build_mongo_query(filters)
+            print(query)
             cursor = self.db.rooms.find(query, {'_id': 0})
             return await cursor.to_list(length=1000)
         except Exception as e:

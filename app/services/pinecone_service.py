@@ -13,7 +13,7 @@ class PineconeManager:
     def __new__(cls):
         if not cls._instance:
             cls._instance = super().__new__(cls)
-            cls._instance.pc = PineconeAsyncio(api_key=settings.pinecone_api_key)  # CHANGED: singleton async client
+            cls._instance.pc = PineconeAsyncio(api_key=settings.pinecone_api_key)
             cls._instance.index = None
             cls._instance._last_healthy = 0.0
             cls._instance._health_lock = asyncio.Lock()

@@ -52,7 +52,7 @@ class Settings(BaseSettings):
         Seu objetivo é construir uma conversa agradável com o cliente e enviar todas as informações necessárias.
         Seja simpático, educado e profissional."""
     )
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
 
     class Config:
         env_file = ".env"

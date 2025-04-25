@@ -1,2 +1,5 @@
 env/
+.env
+.env.debug
 todo.txt
+test.py

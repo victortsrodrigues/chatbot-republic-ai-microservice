@@ -101,7 +101,7 @@ class RAGOrchestrator:
         self.system_message = settings.default_system_message
         self.filter_template = """Converta esta query para a sintaxe JSON do MongoDB:
                                     {query}
-                                    Use este esquema (todos os campos são opcionais):
+                                    Sua resposta deve ser um json válido seguindo a estrutura abaixo (todos os campos são opcionais):
                                     {{
                                         "price"?: {{
                                             "$lt"?: number,
@@ -317,8 +317,8 @@ você deve decidir duas coisas para a resposta final do chatbot:
 
 Responda com um objeto JSON exatamente assim:
 {
-  "include_room_data": True|False,
-  "include_media": True|False
+  "include_room_data": true|false,
+  "include_media": true|false
 }
 """,
             },
@@ -357,14 +357,18 @@ Contexto recuperado:
                         "content": getattr(
                             settings,
                             'filter_parser_system_message',
-                            "Você é um analisador de query habilidoso. Retorne apenas JSON válido."
+                            "Você é um analisador de query habilidoso. Retorne apenas JSON válido. "
+                            "Certifique-se de que o JSON esteja bem formatado e siga o esquema fornecido."
+                            "Caso não seja especificada consulta a quartos ocupados, considere 'availability': true"
                         )
                     },
                     {"role": "user", "content": self.filter_template.format(query=query)}
                 ],
                 temperature=getattr(settings, 'filter_parse_temperature', 0.0)
             )
+            logger.debug(f"Filter parsing response: {response}")
             parsed = json.loads(response.strip("` \n"))
+            logger.debug(f"Parsed filters: {parsed}")
             return parsed
         except (json.JSONDecodeError):
             logger.warning("Primary filter parsing failed - Using fallback")
@@ -396,7 +400,7 @@ Contexto recuperado:
             filters["features"] = {"$all": features}
 
         # Availability
-        if "disponível" in query.lower():
+        if "disponível" in query.lower() or "disponíveis" in query.lower() or "vagos" in query.lower():
             filters["availability"] = True
 
         return filters
@@ -413,7 +417,7 @@ Contexto recuperado:
     ) -> dict:
         """Generate the final response with OpenAI with retry logic"""
         max_history = getattr(settings, 'max_history_length', 5)
-        # token_limit = getattr(settings, 'response_token_limit', 5000)
+        # In case want to limit token, use: token_limit = getattr(settings, 'response_token_limit', 5000)
         
         context_str = "\n".join([str(c.get("metadata", {})) for c in context])
 
