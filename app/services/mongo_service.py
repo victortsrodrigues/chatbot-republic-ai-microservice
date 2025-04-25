@@ -93,7 +93,7 @@ class MongoDBClient:
                     mongo_query[logical_op] = processed_clauses
 
         # Direct field mappings
-        for field in ['room_type', 'availability']:
+        for field in ['availability']:
             if field in filters:
                 mongo_query[field] = process_value(filters[field])
 

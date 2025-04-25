@@ -3,12 +3,13 @@ from app.services.pinecone_service import PineconeManager
 from app.services.mongo_service import MongoDBClient
 from app.config import settings
 from app.utils.logger import logger
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Tuple
 import re
 import json
 import asyncio
 import time
 from functools import wraps
+from cachetools import TTLCache
 
 
 # Decorator for retrying critical operations
@@ -38,20 +39,67 @@ def async_retry(max_retries=3, backoff_factor=2):
     return decorator
 
 
+class CircuitBreaker:
+    """Encapsulated circuit breaker logic with state management"""
+    def __init__(self, failure_threshold: int = 5, reset_timeout: int = 120):
+        self.state = "closed"
+        self.failure_count = 0
+        self.last_failure = 0.0
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+
+    def should_reject(self) -> bool:
+        if self.state == "open":
+            if time.time() - self.last_failure < self.reset_timeout:
+                return True
+            # Auto-reset after timeout
+            self.state = "closed"
+            self.failure_count = 0
+        return False
+
+    def record_failure(self):
+        self.failure_count += 1
+        if self.failure_count >= self.failure_threshold:
+            self.state = "open"
+            self.last_failure = time.time()
+            logger.error(f"Circuit breaker opened after {self.failure_count} failures")
+
+
 class RAGOrchestrator:
     _instance = None
     _init_lock = asyncio.Lock()
     
-    # Implement singleton pattern similar to other services
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            # Initialize these attributes but actual clients will be set up in initialize()
-            cls._instance.openai = None
-            cls._instance.pinecone = None
-            cls._instance.mongo = None
-            cls._instance.system_message = settings.default_system_message
-            cls._instance.filter_template = """Converta esta query para a sintaxe JSON do MongoDB:
+            cls._instance._initialize_state()
+        return cls._instance
+
+    def _initialize_state(self):
+        """Initialize all instance variables in one place"""
+        self.openai: Optional[OpenAIHandler] = None
+        self.pinecone: Optional[PineconeManager] = None
+        self.mongo: Optional[MongoDBClient] = None
+        
+        # Circuit breaker with configurable settings
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=getattr(settings, 'rag_circuit_failure_threshold', 5),
+            reset_timeout=getattr(settings, 'rag_circuit_timeout', 120)
+        )
+        
+        # Configured concurrency limits
+        self._request_semaphore = asyncio.Semaphore(
+            getattr(settings, 'rag_max_concurrent_requests', 20)
+        )
+        
+        # TTL-based caching with size limits from settings
+        cache_maxsize = getattr(settings, 'rag_cache_maxsize', 1000)
+        cache_ttl = getattr(settings, 'rag_cache_ttl', 300)
+        self._response_cache = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
+        
+        # System configuration
+        self.system_message = settings.default_system_message
+        self.filter_template = """Converta esta query para a sintaxe JSON do MongoDB:
                                     {query}
                                     Use este esquema (todos os campos são opcionais):
                                     {{
@@ -67,7 +115,6 @@ class RAGOrchestrator:
                                             "$in"?: string[],
                                             "$nin"?: string[]
                                         }},
-                                        "room_type"?: string,
                                         "availability"?: boolean,
                                         "$or"?: [{{...}}],
                                         "$and"?: [{{...}}],
@@ -84,30 +131,18 @@ class RAGOrchestrator:
                                             }}
                                         }}
                                     }}"""
-            
-            # Circuit breaker pattern for RAG service
-            cls._instance._circuit_state = "closed"
-            cls._instance._consecutive_failures = 0
-            cls._instance._failure_threshold = 5
-            cls._instance._last_failure = 0
-            
-            # Request semaphore to manage concurrent operations
-            cls._instance._request_semaphore = asyncio.Semaphore(
-                getattr(settings, 'rag_max_concurrent_requests', 20)
-            )
-            
-            # Add cache for common queries
-            cls._instance._response_cache = {}
-            cls._instance._cache_ttl = getattr(settings, 'rag_cache_ttl', 300)  # 5 minutes
-            
-            # Add initialization flag
-            cls._instance._initialized = False
+        self._initialized = False
+        self._embedding_dim = getattr(settings, 'embedding_dimension', 1536)
+
+        self.synonym_map = getattr(
+            settings,
+            'query_synonyms',
+            {"valor": "preço", "acomodações": "quartos", "lugares": "quartos"}
+        )
         
-        return cls._instance
-    
     # Add proper async initialization
     async def initialize(self):
-        """Initialize all service connections safely"""
+        """Async-safe service initialization"""
         if self._initialized:
             return
             
@@ -126,217 +161,152 @@ class RAGOrchestrator:
                 self.mongo = MongoDBClient()
                 
                 self._initialized = True
-                logger.info("RAG Orchestrator successfully initialized")
+                logger.info("RAG Orchestrator initialized successfully")
             except Exception as e:
-                logger.critical(f"RAG Orchestrator initialization failed: {str(e)}")
-                self._handle_failure()
+                logger.critical(f"Initialization failed: {str(e)}")
+                self.circuit_breaker.record_failure()
                 raise
 
-    async def process_query(
-        self,
-        query: str,
-        history: list,
-        system_message: str = None,
-    ) -> dict:
-        """Process user query with concurrency control and circuit breaker"""
-        # Check circuit breaker state
-        if self._circuit_state == "open":
-            if time.time() - self._last_failure < getattr(settings, 'rag_circuit_timeout', 120):
-                logger.warning("Circuit breaker open - rejecting request")
-                return {"error": "Service temporarily unavailable", "circuit_open": True}
-            else:
-                # Reset circuit breaker after timeout
-                self._circuit_state = "closed"
-                self._consecutive_failures = 0
+    @async_retry(max_retries=3)
+    async def process_query(self, query: str, history: list, system_message: str = None) -> dict:
+        """Process user query with enhanced concurrency and error handling"""
+        # Circuit breaker check
+        if self.circuit_breaker.should_reject():
+            logger.warning("Circuit breaker open - rejecting request")
+            return {"error": "Service temporarily unavailable", "circuit_open": True}
         
-        # Initialize services if needed
         if not self._initialized:
             await self.initialize()
         
-        # Use request semaphore to limit concurrent requests
         async with self._request_semaphore:
-            # Check cache for identical queries
-            cache_key = f"{query}:{str(history[-5:] if history else [])}:{system_message or self.system_message}"
-            cached_response = self._check_cache(cache_key)
-            if cached_response:
+            cache_key = self._generate_cache_key(query, history, system_message)
+            if cached := self._response_cache.get(cache_key):
                 logger.info("Cache hit for query")
-                return cached_response
-            
+                return cached
+
             try:
-                # Check query's moderation
-                if await self.openai.check_moderation(query):
-                    return {"error": "Query not allowed"}
-
-                # Correct typos using OpenAI with retries
-                query = await self._correct_typos_with_retry(query)
-
-                # Normalize query
-                query = self._normalize_query(query)
-
-                # Generate embedding and get context
-                embedding = await self.openai.generate_embedding(query)
-                # Validate embedding result
-                if not isinstance(embedding, list) or len(embedding) != 1536:
-                    raise ValueError("Invalid embedding format")
-
-                # Use timeouts consistently
-                context_results = await asyncio.wait_for(
-                    self.pinecone.query_index(embedding=embedding, top_k=3),
-                    timeout=5.0,
-                )
-
-                # Determine if room data is needed
-                requires_room_data, requires_media = (
-                    await self._decide_inclusions_room_data_and_media(
-                        query, context_results
-                    )
-                )
-
-                # Extract all relevant information
-                # Rooms
-                parsed_filters = (
-                    await self._parse_filters(query) if requires_room_data else {}
-                )
-                
-                # Use asyncio.gather for concurrent fetching
-                if requires_room_data:
-                    rooms_data = await asyncio.wait_for(
-                        self.mongo.get_all_rooms(parsed_filters),
-                        timeout=3.0
-                    )
-                else:
-                    rooms_data = []
-                    
-                # Media
-                media_data = self._get_media_data(rooms_data) if requires_media else []
-
-                # Generate response
-                response = await self._generate_response(
-                    query,
-                    context_results,
-                    rooms_data,
-                    history,
-                    system_message or self.system_message,
-                    needs_room_info=requires_room_data,
-                )
-
-                # Check response's moderation
-                if await self.openai.check_moderation(response.get("response", "")):
-                    return {"error": "Response not allowed"}
-
-                final_response = self._merge_media_data(response, media_data)
-                
-                # Store in cache
-                self._update_cache(cache_key, final_response)
-                
-                # Reset failure counter on success
-                self._consecutive_failures = 0
-                
-                return final_response
-
+                return await self._process_query_unsafe(query, history, system_message, cache_key)
             except (asyncio.TimeoutError, ValueError) as e:
-                logger.error(f"Pipeline failed at stage: {str(e)}")
-                await self._handle_failure()
-                return {"error": "Pipeline failed", "detail": str(e)}
+                logger.error(f"Pipeline failure: {str(e)}")
+                self.circuit_breaker.record_failure()
+                return {"error": "Processing timeout", "detail": str(e)}
             except Exception as e:
-                logger.error(f"Unexpected error in RAG pipeline: {str(e)}")
-                await self._handle_failure()
-                return {"error": "Internal service error", "detail": str(e)}
-    
-    # Add method to handle failures with circuit breaker
-    async def _handle_failure(self):
-        """Update failure tracking and possibly open circuit breaker"""
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self._failure_threshold:
-            self._circuit_state = "open"
-            self._last_failure = time.time()
-            logger.error(f"Circuit breaker opened after {self._consecutive_failures} failures")
-    
-    # Add caching methods
-    def _check_cache(self, key: str) -> Dict[str, Any]:
-        """Check if response is in cache and not expired"""
-        if key in self._response_cache:
-            timestamp, response = self._response_cache[key]
-            if time.time() - timestamp < self._cache_ttl:
-                return response
-            else:
-                # Clean expired cache entry
-                del self._response_cache[key]
-        return None
-    
-    def _update_cache(self, key: str, response: Dict[str, Any]):
-        """Store response in cache with timestamp"""
-        # Only cache successful responses
-        if "error" not in response:
-            self._response_cache[key] = (time.time(), response)
+                logger.error(f"Unexpected error: {str(e)}")
+                self.circuit_breaker.record_failure()
+                return {"error": "Internal error", "detail": str(e)}
+
+    async def _process_query_unsafe(self, query: str, history: list, system_message: str, cache_key: str) -> dict:
+        """Core processing logic without error handling"""
+        if await self.openai.check_moderation(query):
+            logger.warning(f"Moderation failed for query: {query[:50]}...")
+            return {"error": "Query content policy violation"}
+
+        query = await self._correct_typos(query)
+        query = self._normalize_query(query)
+
+        # Parallel execution of embedding and initial processing
+        embedding_task = asyncio.create_task(self.openai.generate_embedding(query))
+        
+        # Wait for embedding and then get context
+        embedding = await embedding_task
+        if not self._validate_embedding(embedding):
+            raise ValueError("Invalid embedding dimensions")
             
-            # Clean old entries if cache is too large
-            if len(self._response_cache) > 1000:  # Arbitrary limit to prevent memory issues
-                oldest_key = min(self._response_cache.keys(), 
-                                 key=lambda k: self._response_cache[k][0])
-                del self._response_cache[oldest_key]
+        context_results = await asyncio.wait_for(
+            self.pinecone.query_index(embedding=embedding, top_k=3),
+            timeout=getattr(settings, 'pinecone_query_timeout', 5.0)
+        )
 
-    @async_retry(max_retries=2)
-    async def _correct_typos_with_retry(self, query: str):
-        """Apply retry decorator to typo correction"""
-        return await self._correct_typos(query)
+        include_room, include_media = await self._decide_inclusions(query, context_results)
+        
+        # Parallel data fetching based on inclusion decisions
+        rooms_data = []
+        if include_room:
+            parsed_filters = await self._parse_filters(query)
+            rooms_data = await asyncio.wait_for(
+                self.mongo.get_all_rooms(parsed_filters),
+                timeout=getattr(settings, 'mongo_query_timeout', 3.0)
+            )
 
+        response = await self._generate_response(
+            query, context_results, rooms_data, 
+            history, system_message or self.system_message, include_room
+        )
+
+        if await self.openai.check_moderation(response.get("response", "")):
+            logger.warning(f"Moderation failed for response: {response['response'][:50]}...")
+            return {"error": "Response content policy violation"}
+
+        # Add media data if needed
+        media_data = self._get_media_data(rooms_data) if include_media else []
+        
+        final_response = self._merge_media_data(response, media_data)
+        
+        # Store in cache for future use
+        self._response_cache[cache_key] = final_response
+        return final_response
+
+    def _generate_cache_key(self, query: str, history: list, system_message: str) -> str:
+        """Generate consistent cache key with hash for efficiency"""
+        history_str = json.dumps(history[-5:] if history else [], sort_keys=True)
+        return f"{hash(query)}:{hash(history_str)}:{hash(system_message or self.system_message)}"
+
+    def _validate_embedding(self, embedding: List[float]) -> bool:
+        """Validate embedding dimensions using configurable setting"""
+        return isinstance(embedding, list) and len(embedding) == self._embedding_dim
+ 
+
+    @async_retry(max_retries=getattr(settings, 'typo_correction_retries', 2))
     async def _correct_typos(self, query: str) -> str:
-        """Correct typos using OpenAI"""
-        prompt = f"""Corrija quaisquer erros de digitação nesta query. Retorne apenas o texto corrigido.
-        Query original: '{query}'
-        Query corrigida:"""
-
+        """Correct query typos using OpenAI with configurable retries"""
         try:
+            system_msg = getattr(
+                settings, 
+                'typo_correction_system_message',
+                "Você é um revisor habilidoso. Devolva apenas o texto corrigido."
+            )
             response = await self.openai.generate_chat_completion(
                 [
-                    {
-                        "role": "system",
-                        "content": "Você é um revisor habilidoso. Devolva apenas o texto corrigido.",
-                    },
-                    {"role": "user", "content": prompt},
-                ]
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": f"Corrija erros de digitação: '{query}'"}
+                ],
+                temperature=getattr(settings, 'typo_correction_temperature', 0.1)
             )
             return response.strip().strip('"')
         except Exception as e:
-            logger.error(f"Typo correction failed: {str(e)}")
-            return query  # Fallback to original
-
-    # Add synonym mapping
-    SYNONYM_MAP = {
-        "valor": "preço",
-        "acomodações": "quartos",
-        "lugares": "quartos",
-    }
+            logger.error(f"Typo correction failed: {str(e)} - Using original query")
+            return query  # Graceful fallback
 
     def _normalize_query(self, query: str) -> str:
-        """Replace synonyms with canonical terms"""
-        for synonym, canonical in self.SYNONYM_MAP.items():
-            query = re.sub(rf"\b{synonym}\b", canonical, query, flags=re.IGNORECASE)
+        """Normalize query terms using configurable synonym map"""
+        for synonym, canonical in self.synonym_map.items():
+            query = re.sub(
+                rf'\b{re.escape(synonym)}\b', 
+                canonical, 
+                query, 
+                flags=re.IGNORECASE
+            )
         return query
 
     # Intent detection methods
-    async def _decide_inclusions_room_data_and_media(
-        self, query: str, context: list
-    ) -> tuple[bool, bool]:
-        """
-        Ask GPT whether to include room metadata and/or media links.
-        Returns (include_room_data, include_media_links).
-        """
-        # First check explicit context markers
+    async def _decide_inclusions(
+        self, 
+        query: str, 
+        context: List[Dict]
+    ) -> Tuple[bool, bool]:
+        """Determine data inclusions with configurable relevance threshold"""
+        relevance_threshold = getattr(settings, 'context_relevance_threshold', 0.8)
         relevant_rooms = [
-            match
-            for match in context
-            if match["score"] >= 0.8 and match["metadata"].get("type") == "room"
+            match for match in context
+            if match["score"] >= relevance_threshold
+            and match["metadata"].get("type") == "room"
         ]
-        if relevant_rooms:
-            # If we already know rooms are relevant, still let GPT decide media
-            include_room = True
-        else:
-            include_room = None  # defer to model
 
-        # If no explicit markers, use OpenAI to analyze intent
-        prompt = [
+        # If relevant rooms exist, automatically include room data
+        include_room_explicit = bool(relevant_rooms)
+
+        # Use OpenAI to analyze intent for more subtle cases
+        decision_prompt = [
             {
                 "role": "system",
                 "content": """
@@ -347,8 +317,8 @@ você deve decidir duas coisas para a resposta final do chatbot:
 
 Responda com um objeto JSON exatamente assim:
 {
-  "include_room_data": true|false,
-  "include_media": true|false
+  "include_room_data": True|False,
+  "include_media": True|False
 }
 """,
             },
@@ -364,45 +334,42 @@ Contexto recuperado:
             },
         ]
 
-        response = await self.openai.generate_chat_completion(prompt)
-        # Extract and parse the JSON decision
-        content = response.strip()
+        response = await self.openai.generate_chat_completion(decision_prompt)
+        
         try:
-            decision = json.loads(content)
+            decision = json.loads(response.strip())
+            return (
+                include_room_explicit or bool(decision.get("include_room_data", False)),
+                bool(decision.get("include_media", False))
+            )
         except json.JSONDecodeError:
-            # fallback defaults
-            return bool(include_room), False
+            logger.warning("Failed to parse inclusion decision - Using defaults")
+            return include_room_explicit, False
 
-        # Merge explicit-room check if we short-circuited above
-        include_room_final = (
-            include_room
-            if include_room is not None
-            else bool(decision.get("include_room_data", False))
-        )
-        include_media = bool(decision.get("include_media", False))
-
-        return include_room_final, include_media
-
-    @async_retry(max_retries=2)
-    async def _parse_filters(self, query: str) -> dict:
-        """Use OpenAI to extract structured filters from natural language with retry logic"""
-        prompt = f"""Extract EXACT filters from this query. Return empty JSON if none.
-                Query: {query}
-                {self.filter_template}"""
-        response = await self.openai.generate_chat_completion(
-            [
-                {
-                    "role": "system",
-                    "content": "Você é um analisador de query habilidoso. Retorne apenas JSON válido.",
-                },
-                {"role": "user", "content": prompt},
-            ]
-        )
-
+    @async_retry(max_retries=getattr(settings, 'filter_parse_retries', 2))
+    async def _parse_filters(self, query: str) -> Dict:
+        """Parse filters with configurable template and validation"""
         try:
-            return json.loads(response.strip("` \n"))
-        except json.JSONDecodeError:
+            response = await self.openai.generate_chat_completion(
+                [
+                    {
+                        "role": "system",
+                        "content": getattr(
+                            settings,
+                            'filter_parser_system_message',
+                            "Você é um analisador de query habilidoso. Retorne apenas JSON válido."
+                        )
+                    },
+                    {"role": "user", "content": self.filter_template.format(query=query)}
+                ],
+                temperature=getattr(settings, 'filter_parse_temperature', 0.0)
+            )
+            parsed = json.loads(response.strip("` \n"))
+            return parsed
+        except (json.JSONDecodeError):
+            logger.warning("Primary filter parsing failed - Using fallback")
             return self._fallback_filter_parsing(query)
+        
 
     def _fallback_filter_parsing(self, query: str) -> dict:
         """Regex-based fallback for filter parsing"""
@@ -445,25 +412,28 @@ Contexto recuperado:
         needs_room_info: bool,
     ) -> dict:
         """Generate the final response with OpenAI with retry logic"""
-        context_str = "\n".join([str(c.get("metadata", "")) for c in context])
+        max_history = getattr(settings, 'max_history_length', 5)
+        # token_limit = getattr(settings, 'response_token_limit', 5000)
+        
+        context_str = "\n".join([str(c.get("metadata", {})) for c in context])
 
         # Conditionally include room data
         rooms_str = ""
         if needs_room_info and rooms_data:
-            rooms_str = "\nAvailable Rooms:\n" + "\n".join(
-                f"{r.get('room_id', 'unknown')}: {r.get('description', 'No description')} (${r.get('price', 'N/A')}/month)"
+            rooms_str = "\nQuartos disponíveis:\n" + "\n".join(
+                f"{r.get('room_id', '')}: {r.get('description', '')} (R${r.get('price', '')}/mês)"
                 for r in rooms_data
             )
 
         # Limit history to prevent token overflow
-        limited_history = history[-settings.max_history_length:]
+        limited_history = history[-max_history:]
         
         messages = [
             {"role": "system", "content": system_message},
             *limited_history,
             {
                 "role": "user",
-                "content": f"Context:\n{context_str}\n\n{rooms_str}\n\nQuestion: {query}",
+                "content": f"Contexto:\n{context_str}\n\n{rooms_str}\n\Pergunta: {query}",
             },
         ]
 
@@ -508,15 +478,17 @@ Contexto recuperado:
         return response
         
     async def close(self):
-        """Gracefully close all connections"""
+        """Graceful shutdown with individual service cleanup"""
+        close_ops = []
+        if self.openai:
+            close_ops.append(self.openai.close())
+        if self.pinecone:
+            close_ops.append(self.pinecone.close())
+        
         try:
-            if self.openai:
-                await self.openai.close()
-            if self.pinecone:
-                await self.pinecone.close()
-            # MongoDB client will be closed by its own shutdown handler
-            
-            self._initialized = False
-            logger.info("RAG Orchestrator connections closed")
+            await asyncio.gather(*close_ops)
         except Exception as e:
-            logger.error(f"Error during RAG service shutdown: {str(e)}")
+            logger.error(f"Cleanup error: {str(e)}")
+        finally:
+            self._initialized = False
+            logger.info("RAG services closed")
