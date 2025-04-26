@@ -32,7 +32,7 @@ class PineconeManager:
                 # list or create index
                 existing = await self.pc.list_indexes()
                 if settings.pinecone_index_name not in existing.names():
-                    await self._create_index_with_retry()  # CHANGED: use retry logic
+                    await self._create_index_with_retry()
                 else:
                     logger.info(f"Index exists: {settings.pinecone_index_name}")
 

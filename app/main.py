@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.routers import rag_router, health_router
 from app.services.rag_service import RAGOrchestrator
@@ -29,6 +30,14 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during shutdown: {str(e)}")
 
 app = FastAPI(title="Student Republic RAG Service", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development; specify your origins in production: Replace allow_origins=["*"] with specific origins: allow_origins=["https://your-typescript-backend.com", "http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],  # Allow all headers or specify certain ones (allow_headers=["X-API-Key", "Content-Type"],)
+)
 
 app.include_router(rag_router.router, prefix="/rag", tags=["RAG"])
 app.include_router(health_router.router, prefix="/health", tags=["Health"])
