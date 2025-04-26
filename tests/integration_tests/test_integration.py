@@ -151,6 +151,123 @@ class TestRagEndpoint:
         assert response.status_code == 500
         assert "error" in response.json()["detail"].lower()
 
+    def test_empty_query_validation(self, test_client):
+        """Test validation for empty query."""
+        test_query = {
+            "query": "",  # Empty query should be rejected
+            "history": [],
+            "user_id": "test_user_123"
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("query" in error["loc"] and "should have at least 1 character" in error["msg"].lower() for error in error_detail)
+    
+    def test_whitespace_query_validation(self, test_client):
+        """Test validation for query with only whitespace."""
+        test_query = {
+            "query": "   ",  # Only whitespace should be rejected
+            "history": [],
+            "user_id": "test_user_123"
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("query" in error["loc"] and "empty" in error["msg"].lower() for error in error_detail)
+    
+    def test_empty_user_id_validation(self, test_client):
+        """Test validation for empty user_id."""
+        test_query = {
+            "query": "Quais quartos estão disponíveis?",
+            "history": [],
+            "user_id": ""  # Empty user_id should be rejected
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("user_id" in error["loc"] and "should have at least 1 character" in error["msg"].lower() for error in error_detail)
+    
+    def test_invalid_history_format_validation(self, test_client):
+        """Test validation for invalid history format."""
+        test_query = {
+            "query": "Quais quartos estão disponíveis?",
+            "history": [
+                {"invalid_key": "This history item is missing role and content"}
+            ],
+            "user_id": "test_user_123"
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("history" in error["loc"] and "must contain role and content" in error["msg"].lower() for error in error_detail)
+    
+    def test_invalid_role_in_history_validation(self, test_client):
+        """Test validation for invalid role in history."""
+        test_query = {
+            "query": "Quais quartos estão disponíveis?",
+            "history": [
+                {"role": "invalid_role", "content": "This has an invalid role"}
+            ],
+            "user_id": "test_user_123"
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("history" in error["loc"] and "invalid role" in error["msg"].lower() for error in error_detail)
+    
+    def test_history_too_long_validation(self, test_client):
+        """Test validation for history that exceeds the maximum length."""
+        # Create a history with 51 items (exceeding the 50 limit)
+        long_history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"Message {i}"}
+            for i in range(51)
+        ]
+        
+        test_query = {
+            "query": "Quais quartos estão disponíveis?",
+            "history": long_history,
+            "user_id": "test_user_123"
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("history" in error["loc"] and "too long" in error["msg"].lower() for error in error_detail)
+    
+    def test_query_too_long_validation(self, test_client):
+        """Test validation for query that exceeds the maximum length."""
+        # Create a query with 4001 characters (exceeding the 4000 limit)
+        long_query = "a" * 4001
+        
+        test_query = {
+            "query": long_query,
+            "history": [],
+            "user_id": "test_user_123"
+        }
+        
+        response = test_client.post("/rag/query", json=test_query)
+        
+        # Verify validation error response
+        assert response.status_code == 422
+        error_detail = response.json()["detail"]
+        assert any("query" in error["loc"] and "at most 4000" in error["msg"].lower() for error in error_detail)
 
 class TestHealthEndpoints:
     """Integration tests for health check endpoints."""
