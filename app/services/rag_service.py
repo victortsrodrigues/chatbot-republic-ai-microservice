@@ -137,7 +137,7 @@ class RAGOrchestrator:
         self.synonym_map = getattr(
             settings,
             'query_synonyms',
-            {"valor": "preço", "acomodações": "quartos", "lugares": "quartos"}
+            {"valor": "preço", "lugares": "quartos"}
         )
         
     # Add proper async initialization
