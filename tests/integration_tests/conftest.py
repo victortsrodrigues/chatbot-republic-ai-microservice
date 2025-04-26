@@ -9,6 +9,46 @@ from app.services.pinecone_service import PineconeManager
 from app.services.mongo_service import MongoDBClient
 from app.services.rag_service import RAGOrchestrator
 
+@pytest.fixture(autouse=True)
+def reset_singletons():
+    """Reset all singleton instances between tests."""
+    RAGOrchestrator._instance = None
+    PineconeManager._instance = None
+    OpenAIHandler._instance = None
+    MongoDBClient._instance = None
+    yield
+
+@pytest.fixture(autouse=True)
+def reset_circuit_breakers():
+    """Reset circuit breaker state between tests."""
+    if RAGOrchestrator._instance:
+        RAGOrchestrator._instance.circuit_breaker.state = "closed"
+        RAGOrchestrator._instance.circuit_breaker.failure_count = 0
+    yield
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiters():
+    """Reset rate limiter state between tests."""
+    from app.services.openai_service import user_rate_limiter
+    user_rate_limiter.user_requests = {}
+    yield
+
+@pytest.fixture(scope="function")
+def event_loop():
+    """Create a new event loop for each test."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield loop
+    loop.close()
+
+@pytest.fixture(autouse=True)
+async def cleanup_services():
+    """Ensure services are properly cleaned up after tests."""
+    yield
+    # Cleanup after test
+    if RAGOrchestrator._instance and hasattr(RAGOrchestrator._instance, "close"):
+        await RAGOrchestrator._instance.close()
+
 
 # General fixtures
 @pytest.fixture

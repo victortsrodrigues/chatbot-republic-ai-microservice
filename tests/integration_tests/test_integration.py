@@ -8,6 +8,10 @@ from app.main import app
 from app.models.schemas import RAGQuery, RAGResponse
 from app.services.rag_service import RAGOrchestrator
 
+import asyncio
+import time
+from app.utils.logger import logger
+from concurrent.futures import ThreadPoolExecutor
 
 @pytest.fixture
 def test_client():
@@ -377,3 +381,161 @@ class TestRAGOrchestrator:
                     # Verify moderation response
                     assert "error" in result
                     assert "policy violation" in result["error"].lower()
+                    
+                    
+                    
+class TestConcurrentRequests:
+    """Tests for handling multiple concurrent requests."""
+    
+    @pytest.mark.asyncio
+    async def test_multiple_concurrent_requests(self, test_client, mock_rag_orchestrator):
+        """Test handling of multiple concurrent requests from different users."""
+        # Configure mock to return different responses based on user_id
+        async def mock_process_query(**kwargs):
+            user_id = kwargs.get("user_id", "unknown")
+            # Simulate processing time
+            await asyncio.sleep(0.1)
+            return {
+                "response": f"Response for {user_id}",
+                "sources": [{"type": "test", "id": user_id}],
+                "requires_action": False
+            }
+        
+        mock_rag_orchestrator.process_query.side_effect = mock_process_query
+        
+        # Patch rate limiter to allow all requests but track calls
+        rate_limit_calls = {}
+        
+        async def mock_check_user_limit(user_id):
+            rate_limit_calls[user_id] = rate_limit_calls.get(user_id, 0) + 1
+            # Allow all requests except for specific test user
+            return user_id != "rate_limited_user"
+        
+        # Number of concurrent requests to simulate
+        num_requests = 10
+        num_users = 5  # Distribute requests among these users
+        
+        # Create test queries for different users
+        test_queries = [
+            {
+                "query": f"Test query {i}",
+                "history": [],
+                "system_message": None,
+                "user_id": f"test_user_{i % num_users}"  # Distribute among users
+            }
+            for i in range(num_requests)
+        ]
+        
+        # Add a rate-limited user
+        test_queries.append({
+            "query": "This should be rate limited",
+            "history": [],
+            "system_message": None,
+            "user_id": "rate_limited_user"
+        })
+        
+        # Function to make a request in a separate thread
+        def make_request(query_data):
+            with patch('app.routers.rag_router.RAGOrchestrator', return_value=mock_rag_orchestrator):
+                with patch('app.routers.rag_router.user_rate_limiter.check_user_limit', side_effect=mock_check_user_limit):
+                    return test_client.post("/rag/query", json=query_data)
+        
+        # Use ThreadPoolExecutor to make concurrent requests
+        start_time = time.time()
+        with ThreadPoolExecutor(max_workers=num_requests + 1) as executor:
+            responses = list(executor.map(make_request, test_queries))
+        end_time = time.time()
+        
+        # Verify responses
+        success_count = 0
+        rate_limited_count = 0
+        
+        for i, response in enumerate(responses):
+            if test_queries[i]["user_id"] == "rate_limited_user":
+                assert response.status_code == 429
+                rate_limited_count += 1
+            else:
+                assert response.status_code == 200
+                data = response.json()
+                assert data["response"] == f"Response for {test_queries[i]['user_id']}"
+                success_count += 1
+        
+        # Verify rate limiter was called for each user
+        assert len(rate_limit_calls) <= num_users + 1  # +1 for rate limited user
+        
+        # Verify the rate limited user was rejected
+        assert rate_limited_count == 1
+        
+        # Verify successful requests
+        assert success_count == num_requests
+        
+        # Verify mock was called the expected number of times
+        assert mock_rag_orchestrator.process_query.call_count == num_requests
+        
+        # Log performance information
+        total_time = end_time - start_time
+        requests_per_second = num_requests / total_time
+        logger.info(f"Processed {num_requests} requests in {total_time:.2f}s ({requests_per_second:.2f} req/s)")
+    
+    @pytest.mark.asyncio
+    async def test_connection_pool_under_load(self, test_client):
+        """Test the connection pool behavior under load with real services."""
+        # This test verifies that connection pools for MongoDB and other services
+        # properly handle concurrent requests without exhausting connections
+        
+        # Skip this test in CI environments or when using mocks
+        # if os.environ.get("CI") == "true" or os.environ.get("USE_MOCKS") == "true":
+        #     pytest.skip("Skipping connection pool test in CI environment")
+        
+        # Create a real RAGOrchestrator for this test
+        # We'll use the actual services but with minimal operations
+        
+        # Patch the expensive operations to be fast but still use connections
+        with patch('app.services.openai_service.OpenAIHandler.generate_embedding', 
+                  return_value=[0.1] * 1536):
+            with patch('app.services.openai_service.OpenAIHandler.generate_chat_completion',
+                      return_value="Test response"):
+                with patch('app.services.openai_service.OpenAIHandler.check_moderation',
+                          return_value=False):
+                    with patch('app.services.pinecone_service.PineconeManager.query_index',
+                              return_value=[{"id": "doc1", "score": 0.9, "metadata": {"type": "test"}}]):
+                        
+                        # Number of concurrent requests
+                        num_requests = 20
+                        
+                        # Create test queries
+                        test_queries = [
+                            {
+                                "query": f"Connection pool test {i}",
+                                "history": [],
+                                "system_message": None,
+                                "user_id": f"pool_test_user_{i % 5}"  # Use 5 different users
+                            }
+                            for i in range(num_requests)
+                        ]
+                        
+                        # Make concurrent requests
+                        async def make_async_request(query_data):
+                            response = test_client.post("/rag/query", json=query_data)
+                            return response
+                        
+                        # Use asyncio.gather to run requests concurrently
+                        tasks = [make_async_request(query) for query in test_queries]
+                        responses = await asyncio.gather(*tasks, return_exceptions=True)
+                        
+                        # Count successful responses and exceptions
+                        success_count = 0
+                        error_count = 0
+                        
+                        for response in responses:
+                            if isinstance(response, Exception):
+                                error_count += 1
+                            elif response.status_code == 200:
+                                success_count += 1
+                        
+                        # Verify most requests succeeded
+                        # We allow some failures due to potential rate limiting
+                        assert success_count >= num_requests * 0.8, f"Only {success_count}/{num_requests} requests succeeded"
+                        
+                        # Log results
+                        logger.info(f"Connection pool test: {success_count} successes, {error_count} errors out of {num_requests} requests")

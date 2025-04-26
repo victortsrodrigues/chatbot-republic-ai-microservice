@@ -20,8 +20,6 @@ async def handle_rag_query(query: RAGQuery):
     try:
             # Get or initialize the RAG orchestrator
             rag_orchestrator = RAGOrchestrator()
-            if not getattr(rag_orchestrator, "_initialized", False):
-                await rag_orchestrator.initialize()
             
             # Process the query
             logger.info(f"Processing query from user {query.user_id}: {query.query[:50]}...")

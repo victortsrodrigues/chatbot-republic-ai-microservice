@@ -22,8 +22,8 @@ async def lifespan(app: FastAPI):
     # Shutdown logic
     try:
         logger.info("Shutting down services...")
-        orchestrator = RAGOrchestrator()
-        await orchestrator.close()
+        if orchestrator:
+            await orchestrator.close()
         logger.info("Services shut down successfully")
     except Exception as e:
         logger.error(f"Error during shutdown: {str(e)}")

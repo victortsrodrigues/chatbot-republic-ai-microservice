@@ -166,7 +166,16 @@ class RAGOrchestrator:
                 logger.critical(f"Initialization failed: {str(e)}")
                 self.circuit_breaker.record_failure()
                 raise
+    
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self.initialize()
+        return self
 
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.close()
+    
     @async_retry(max_retries=3)
     async def process_query(self, query: str, history: list, system_message: str = None, user_id: str = None) -> dict:
         """Process user query with enhanced concurrency and error handling"""
