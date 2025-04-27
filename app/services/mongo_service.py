@@ -17,7 +17,10 @@ class MongoDBClient:
                     settings.mongo_uri,
                     maxPoolSize=settings.mongo_max_pool_size if hasattr(settings, 'mongo_max_pool_size') else 100,
                     minPoolSize=settings.mongo_min_pool_size if hasattr(settings, 'mongo_min_pool_size') else 10,
-                    serverSelectionTimeoutMS=5000
+                    connectTimeoutMS=settings.mongo_connect_timeout_ms,
+                    socketTimeoutMS=settings.mongo_socket_timeout_ms,
+                    serverSelectionTimeoutMS=settings.mongo_server_selection_timeout_ms,
+                    tls=settings.mongo_tls_enabled
                 )
                 # Initialize database reference
                 cls._instance.db = cls._client.get_database(settings.mongo_db)

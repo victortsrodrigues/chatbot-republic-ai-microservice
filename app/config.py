@@ -22,19 +22,15 @@ class Settings(BaseSettings):
     pinecone_circuit_timeout: int = 60
     pinecone_health_interval: int = 300
 
-    # AWS Configuration
-    aws_access_key_id: str
-    aws_secret_access_key: str
-    aws_region: str
-
-    # S3 Configuration
-    s3_bucket_name: str
-
     # MongoDB Configuration
     mongo_uri: str
     mongo_db: str
     mongo_max_pool_size: int = 100
     mongo_min_pool_size: int = 10
+    mongo_connect_timeout_ms: int = 30000
+    mongo_socket_timeout_ms: int = 45000
+    mongo_server_selection_timeout_ms: int = 5000
+    mongo_tls_enabled: bool = True
 
     # RAG Configuration
     rag_max_concurrent_requests: int = 50  # Simultaneous requests
