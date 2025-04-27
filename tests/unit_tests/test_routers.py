@@ -12,19 +12,25 @@ from app.routers import rag_router, health_router
 @pytest.mark.unit
 def test_liveness_check():
     """Test that liveness check endpoint returns correct response."""
-    with TestClient(app) as client:
-        response = client.get("/health/live")
-        assert response.status_code == 200
-        assert response.json() == {"status": "alive"}
+    with patch('app.services.pinecone_service.PineconeManager.initialize', new_callable=AsyncMock), \
+         patch('app.services.rag_service.RAGOrchestrator.initialize', new_callable=AsyncMock):
+        
+        with TestClient(app) as client:
+            response = client.get("/health/live")
+            assert response.status_code == 200
+            assert response.json() == {"status": "alive"}
 
 
 @pytest.mark.unit
 def test_readiness_check():
     """Test that readiness check endpoint returns correct response."""
-    with TestClient(app) as client:
-        response = client.get("/health/ready")
-        assert response.status_code == 200
-        assert response.json() == {"status": "ready"}
+    with patch('app.services.pinecone_service.PineconeManager.initialize', AsyncMock(return_value=True)), \
+         patch('app.services.rag_service.RAGOrchestrator.initialize', AsyncMock(return_value=True)):
+        
+        with TestClient(app) as client:
+            response = client.get("/health/ready")
+            assert response.status_code == 200
+            assert response.json() == {"status": "ready"}
 
 
 @pytest.mark.unit
