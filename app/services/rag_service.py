@@ -319,10 +319,10 @@ class RAGOrchestrator:
             {
                 "role": "system",
                 "content": """
-Você é um mecanismo de decisão. Dada uma pergunta de um usuário e um contexto recuperado,
+Você é um mecanismo de decisão. Dada uma pergunta de um usuário,
 você deve decidir duas coisas para a resposta final do chatbot:
 1) include_room_data: se deve incluir informações do quarto (tamanho, preço, recursos etc.).
-2) include_media: se deve incluir mídia (imagens, vídeos).
+2) include_media: se deve incluir mídia (fotos, imagens, vídeos).
 
 Responda com um objeto JSON exatamente assim:
 {
@@ -337,8 +337,7 @@ Responda com um objeto JSON exatamente assim:
 Query do usuário:
 "{query}"
 
-Contexto recuperado:
-{context}
+
 """,
             },
         ]
@@ -347,10 +346,12 @@ Contexto recuperado:
         
         try:
             decision = json.loads(response.strip())
-            return (
-                include_room_explicit or bool(decision.get("include_room_data", False)),
-                bool(decision.get("include_media", False))
-            )
+            include_media = bool(decision.get("include_media", False))
+            include_room_data = include_room_explicit or bool(decision.get("include_room_data", False))
+            # If media is included, room data must also be included
+            if include_media:
+                include_room_data = True
+            return include_room_data, include_media
         except json.JSONDecodeError:
             logger.warning("Failed to parse inclusion decision - Using defaults")
             return include_room_explicit, False
