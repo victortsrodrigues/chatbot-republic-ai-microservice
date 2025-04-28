@@ -4,7 +4,7 @@
 ![Docker Pulls](https://img.shields.io/docker/pulls/victortsrodrigues/chatbot-republica-ai-microservice)  
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**An AI-powered FastAPI microservice that serves as the backend for the Student Republic chatbot. It uses RAG (Retrieval-Augmented Generation) with OpenAI, Pinecone vector search and MongoDB to answer student queries over WhatsApp.**
+**An AI-powered FastAPI microservice that serves as the backend for a attendant chatbot. It uses RAG (Retrieval-Augmented Generation) with OpenAI, Pinecone vector search and MongoDB to answer student queries over WhatsApp.**
 
 ---
 
