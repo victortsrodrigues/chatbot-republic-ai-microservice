@@ -1,3 +1,4 @@
+import certifi
 from pymongo.errors import PyMongoError
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.config import settings
@@ -21,7 +22,8 @@ class MongoDBClient:
                     connectTimeoutMS=settings.mongo_connect_timeout_ms,
                     socketTimeoutMS=settings.mongo_socket_timeout_ms,
                     serverSelectionTimeoutMS=settings.mongo_server_selection_timeout_ms,
-                    tls=settings.mongo_tls_enabled
+                    tls=settings.mongo_tls_enabled,
+                    tlsCAFile=certifi.where()
                 )
                 # Initialize database reference
                 cls._instance.db = cls._client.get_database(settings.mongo_db)
