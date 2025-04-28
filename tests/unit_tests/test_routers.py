@@ -25,6 +25,7 @@ def test_liveness_check():
 def test_readiness_check():
     """Test that readiness check endpoint returns correct response."""
     with patch('app.services.pinecone_service.PineconeManager.initialize', AsyncMock(return_value=True)), \
+         patch('app.services.pinecone_service.PineconeManager._check_index_health', AsyncMock(return_value=True)), \
          patch('app.services.rag_service.RAGOrchestrator.initialize', AsyncMock(return_value=True)):
         
         with TestClient(app) as client:
