@@ -6,6 +6,8 @@
 
 **An AI-powered FastAPI microservice that serves as the backend for a attendant chatbot. It uses RAG (Retrieval-Augmented Generation) with OpenAI, Pinecone vector search and MongoDB to answer student queries over WhatsApp.**
 
+🔗 **Production URL**: [https://chatbot-republic-ai-microservice.onrender.com](https://chatbot-republic-ai-microservice.onrender.com)
+
 ---
 
 ## 🧠 Overview
@@ -14,7 +16,7 @@ This microservice exposes HTTP endpoints for:
 - **Health checks** (`/health/live`, `/health/ready`)  
 - **RAG-based Q&A** (`POST /rag/query`)  
 
-It loads vector embeddings into Pinecone, stores chat history and metadata in MongoDB, and invokes OpenAI’s Chat and Embedding APIs to generate context-aware responses.
+It loads vector embeddings into Pinecone, rooms data in MongoDB, and invokes OpenAI’s Chat and Embedding APIs to generate context-aware responses.
 
 ---
 
