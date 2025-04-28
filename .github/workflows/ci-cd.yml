@@ -120,4 +120,4 @@ jobs:
           curl -X POST \
                -H "Content-Type: application/json" \
                -d '{}' \
-               "${RENDER_DEPLOY_HOOK_URL}"
+               $RENDER_DEPLOY_HOOK_URL
