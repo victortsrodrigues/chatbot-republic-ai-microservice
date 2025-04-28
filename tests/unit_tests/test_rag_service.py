@@ -48,7 +48,6 @@ async def test_process_query_cache_hit(mock_openai_handler, mock_pinecone_manage
         cache_key = orchestrator._generate_cache_key(query, history, system_message, user_id)
         cached_response = {
             "response": "Temos dois quartos disponíveis.",
-            "sources": [{"type": "room", "room_id": "A101"}],
             "requires_action": False
         }
         orchestrator._response_cache[cache_key] = cached_response
@@ -81,7 +80,6 @@ async def test_process_query_full_flow(mock_openai_handler, mock_pinecone_manage
         orchestrator._parse_filters = AsyncMock(return_value={"availability": True})
         orchestrator._generate_response = AsyncMock(return_value={
             "response": "Temos dois quartos disponíveis: A101 e B202.",
-            "sources": [{"type": "room", "room_id": "A101"}],
             "requires_action": False
         })
         
@@ -99,7 +97,6 @@ async def test_process_query_full_flow(mock_openai_handler, mock_pinecone_manage
         
         # Verify result
         assert result["response"] == "Temos dois quartos disponíveis: A101 e B202."
-        assert "sources" in result
         assert result["requires_action"] == False
 
 
@@ -274,7 +271,6 @@ async def test_generate_response(mock_openai_handler):
         
         # Verify the result
         assert result["response"] == "Temos dois quartos disponíveis: A101 e B202."
-        assert "sources" in result
         assert result["requires_action"] == False
         mock_openai_handler.generate_chat_completion.assert_called_once()
 
@@ -316,7 +312,6 @@ def test_merge_media_data():
     # Test data
     response = {
         "response": "Temos dois quartos disponíveis: A101 e B202.",
-        "sources": [{"type": "room", "room_id": "A101"}],
         "requires_action": False
     }
     

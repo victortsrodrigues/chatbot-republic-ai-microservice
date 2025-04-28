@@ -28,10 +28,6 @@ class TestRagEndpoint:
         # Mock RAGOrchestrator.process_query to return a successful response
         mock_rag_orchestrator.process_query.return_value = {
             "response": "Este é um exemplo de resposta processada.",
-            "sources": [
-                {"type": "room", "room_id": "A101", "description": "Suite com varanda"},
-                {"type": "room", "room_id": "B202", "description": "Quarto duplo com banheiro"}
-            ],
             "requires_action": False
         }
         
@@ -55,7 +51,6 @@ class TestRagEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["response"] == "Este é um exemplo de resposta processada."
-        assert len(data["sources"]) == 2
         assert not data["requires_action"]
         
         # Verify the mock was called with the expected arguments
@@ -70,9 +65,6 @@ class TestRagEndpoint:
         # Mock RAGOrchestrator.process_query to return a response with media
         mock_rag_orchestrator.process_query.return_value = {
             "response": "Aqui estão fotos dos quartos disponíveis.",
-            "sources": [
-                {"type": "room", "room_id": "A101", "description": "Suite com varanda"}
-            ],
             "requires_action": True,
             "action_type": "fetch_media",
             "media_list": ["rooms/A101/photo1.jpg", "rooms/B202/photo1.jpg"]
@@ -397,7 +389,6 @@ class TestConcurrentRequests:
             await asyncio.sleep(0.1)
             return {
                 "response": f"Response for {user_id}",
-                "sources": [{"type": "test", "id": user_id}],
                 "requires_action": False
             }
         

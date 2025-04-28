@@ -245,10 +245,6 @@ def mock_rag_orchestrator(mock_openai_handler, mock_pinecone_manager, mock_mongo
         instance.initialize = AsyncMock()
         instance.process_query = AsyncMock(return_value={
             "response": "Este é um exemplo de resposta processada.",
-            "sources": [
-                {"type": "room", "room_id": "A101", "description": "Suite com varanda"},
-                {"type": "room", "room_id": "B202", "description": "Quarto duplo com banheiro"}
-            ],
             "requires_action": False
         })
         instance.close = AsyncMock()

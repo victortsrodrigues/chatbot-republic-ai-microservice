@@ -52,7 +52,6 @@ async def test_handle_rag_query_success():
     mock_orchestrator.initialize = AsyncMock()
     mock_orchestrator.process_query = AsyncMock(return_value={
         "response": "Temos dois quartos disponíveis: A101 e B202.",
-        "sources": [{"type": "room", "room_id": "A101"}],
         "requires_action": False
     })
     
@@ -66,7 +65,6 @@ async def test_handle_rag_query_success():
         # Assert expected outcomes
         assert isinstance(result, RAGResponse)
         assert result.response == "Temos dois quartos disponíveis: A101 e B202."
-        assert result.sources == [{"type": "room", "room_id": "A101"}]
         assert result.requires_action == False
         assert result.action_type is None
         assert result.media_list is None
