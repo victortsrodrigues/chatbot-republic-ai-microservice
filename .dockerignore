@@ -1,0 +1,42 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.env
+*.env
+.env.example
+.env.debug
+
+# Development and testing
+.DS_Store
+.git
+.gitignore
+tests/
+pytest.ini
+.idea/
+.vscode/
+
+# Personal settings files
+*.swp
+*.swo
+
+# Local files
+docker-compose.yml
+README.md
+test.py
