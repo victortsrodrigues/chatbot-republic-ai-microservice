@@ -43,7 +43,6 @@ class RAGQuery(BaseModel):
 
 class RAGResponse(BaseModel):
     response: str
-    sources: List[Dict]  # Metadata from Pinecone
     requires_action: bool
     action_type: Optional[str] = None  # 'fetch_media'
     media_list: Optional[List[Union[str, Dict]]] = None  # Replace single media fields

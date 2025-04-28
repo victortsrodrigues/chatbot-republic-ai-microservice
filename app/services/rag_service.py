@@ -454,7 +454,6 @@ Query do usuário:
         chat_response = await self.openai.generate_chat_completion(messages)
         return {
             "response": chat_response,
-            "sources": [c.get("metadata", {}) for c in context],
             "requires_action": False,
         }
 
