@@ -5,10 +5,11 @@ pydantic-settings==2.8.1
 pydantic==2.11.2
 
 # OpenAI integration
-openai==1.14.0
+openai==1.76.0
 
 # Pinecone vector store
 pinecone==6.0.1
+pinecone[asyncio]
 
 # MongoDB
 motor==3.7.0

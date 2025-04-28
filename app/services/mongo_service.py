@@ -7,6 +7,7 @@ from app.utils.logger import logger
 class MongoDBClient:
     _instance = None
     _client = None
+    db = None
     
     def __new__(cls):
         if not cls._instance:
@@ -27,6 +28,7 @@ class MongoDBClient:
                 logger.info("MongoDB connection pool initialized")
             except PyMongoError as e:
                 logger.critical(f"MongoDB connection failed: {str(e)}")
+                cls._instance.db = None  # Explicitly set to None
                 raise
         return cls._instance
     

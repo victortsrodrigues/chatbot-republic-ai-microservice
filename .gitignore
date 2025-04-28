@@ -4,4 +4,5 @@ env/
 todo.txt
 test.py
 __pycache__/
+__pycache__
 .pytest_cache/
